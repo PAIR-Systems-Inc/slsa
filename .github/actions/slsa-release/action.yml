@@ -76,8 +76,6 @@ runs:
 
     - name: Build artifacts
       shell: bash
-      env:
-        GITHUB_TOKEN: ${{ inputs.slsa-workflow-secret1 }}
       run: |
         make artifacts-only
 

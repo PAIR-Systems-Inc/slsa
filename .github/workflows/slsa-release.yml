@@ -7,14 +7,12 @@ on:
     inputs:
       repo:
         description: "Repository to clone (owner/repo)"
-        required: false
+        required: true
         type: string
-        default: "PAIR-Systems-Inc/goodmem"
       ref:
         description: "Git ref (branch, tag, SHA) to checkout"
         required: true
         type: string
-        default: "main"
     secrets:
       REPO_TOKEN:
         description: "GitHub token with access to clone private repo"
@@ -28,7 +26,6 @@ on:
         value: ${{ jobs.slsa-run.outputs.attestations-download-sha256 }}
 
 jobs:
-  # Setup job - generates SLSA token for secure delegation
   slsa-setup:
     permissions:
       id-token: write
@@ -52,20 +49,19 @@ jobs:
           slsa-workflow-inputs: ${{ toJson(inputs) }}
           slsa-workflow-masked-inputs: ""
 
-  # Main SLSA build job - calls the delegator workflow
   slsa-run:
     needs: [slsa-setup]
     permissions:
       id-token: write
-      contents: read
+      contents: write
+      packages: write
       actions: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/delegator_generic_slsa3.yml@v2.1.0
     with:
       slsa-token: ${{ needs.slsa-setup.outputs.slsa-token }}
     secrets:
-      secret1: ${{ secrets.GOODMEM_REPO_TOKEN }}
+      secret1: ${{ secrets.REPO_TOKEN }}
 
-  # Docker build job - builds and pushes container images
   docker-build:
     needs: [slsa-run]
     runs-on: ubuntu-latest
@@ -81,7 +77,7 @@ jobs:
         with:
           repository: ${{ inputs.goodmem_repo }}
           ref: ${{ inputs.goodmem_ref }}
-          token: ${{ secrets.GOODMEM_REPO_TOKEN }}
+          token: ${{ secrets.REPO_TOKEN }}
           fetch-depth: 0
 
       - name: Setup Docker for Server
@@ -92,7 +88,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GOODMEM_REPO_TOKEN }}
+          password: ${{ secrets.REPO_TOKEN }}
 
       - name: Get server image tags
         id: server-tags
@@ -130,7 +126,6 @@ jobs:
           push: true
           tags: ${{ steps.server-hardened-tags.outputs.tags }}
 
-  # Container provenance - server image
   container-provenance-server:
     needs: [docker-build]
     permissions:
@@ -142,9 +137,8 @@ jobs:
       image: ghcr.io/pair-systems-inc/goodmem/server
       digest: ${{ needs.docker-build.outputs.server-digest }}
     secrets:
-      registry-password: ${{ secrets.GOODMEM_REPO_TOKEN }}
+      registry-password: ${{ secrets.REPO_TOKEN }}
 
-  # Container provenance - hardened server image
   container-provenance-server-hardened:
     needs: [docker-build]
     permissions:
@@ -156,12 +150,10 @@ jobs:
       image: ghcr.io/pair-systems-inc/goodmem/server-hardened
       digest: ${{ needs.docker-build.outputs.server-hardened-digest }}
     secrets:
-      registry-password: ${{ secrets.GOODMEM_REPO_TOKEN }}
+      registry-password: ${{ secrets.REPO_TOKEN }}
 
-  # Publish job - creates GitHub release with all artifacts and provenance
   publish:
     needs: [slsa-run, container-provenance-server, container-provenance-server-hardened]
-    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -181,7 +173,7 @@ jobs:
 
       - name: Create GitHub Release
         env:
-          GH_TOKEN: ${{ secrets.GOODMEM_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.REPO_TOKEN }}
           ATTESTATIONS: ${{ needs.slsa-run.outputs.attestations-download-name }}
           REF: ${{ github.ref }}
         run: |
