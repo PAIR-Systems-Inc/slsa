@@ -37,7 +37,7 @@ jobs:
         id: generate
         uses: slsa-framework/slsa-github-generator/actions/delegator/setup-generic@v2.1.0
         with:
-          slsa-workflow-recipient: "delegator-generic_slsa3"
+          slsa-workflow-recipient: "delegator_generic_slsa3"
           slsa-rekor-log-public: true
           slsa-runner-label: "ubuntu-latest"
           slsa-build-action-path: ".github/actions/slsa-release"
@@ -58,7 +58,6 @@ jobs:
       secret1: ${{ secrets.REPO_TOKEN }}
 
   docker-build:
-    needs: [slsa-run]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -103,7 +102,6 @@ jobs:
       #     tags: ${{ steps.server-tags.outputs.tags }}
 
   docker-build-hardened:
-    needs: [slsa-run]
     runs-on: ubuntu-latest
     permissions:
       contents: read
