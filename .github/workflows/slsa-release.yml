@@ -37,7 +37,7 @@ jobs:
         id: generate
         uses: slsa-framework/slsa-github-generator/actions/delegator/setup-generic@v2.1.0
         with:
-          slsa-workflow-recipient: "delegator_generic_slsa3"
+          slsa-workflow-recipient: "delegator_generic_slsa3.yml"
           slsa-rekor-log-public: true
           slsa-runner-label: "ubuntu-latest"
           slsa-build-action-path: ".github/actions/slsa-release"
@@ -155,6 +155,7 @@ jobs:
     with:
       image: ghcr.io/pair-systems-inc/goodmem/server
       digest: ${{ needs.docker-build.outputs.digest }}
+      private-repository: true
     secrets:
       registry-password: ${{ secrets.REPO_TOKEN }}
 
@@ -168,6 +169,7 @@ jobs:
     with:
       image: ghcr.io/pair-systems-inc/goodmem/server-hardened
       digest: ${{ needs.docker-build-hardened.outputs.digest }}
+      private-repository: true
     secrets:
       registry-password: ${{ secrets.REPO_TOKEN }}
 
