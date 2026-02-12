@@ -17,6 +17,9 @@ on:
       REPO_TOKEN:
         description: "GitHub token with access to clone private repo"
         required: true
+      FOSSA_API_KEY:
+        description: "Token to generate fossa reports"
+        required: true
     outputs:
       provenance-download-name:
         description: "The name of the provenance attestation uploaded to the workflow run"
@@ -65,13 +68,22 @@ jobs:
     outputs:
       digest: ${{ steps.build-server.outputs.digest }}
     steps:
-      - name: Checkout code
+      - name: Checkout goodmem
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.goodmem_repo }}
-          ref: ${{ inputs.goodmem_ref }}
+          repository: ${{ inputs.repo }}
+          ref: ${{ inputs.ref }}
           token: ${{ secrets.REPO_TOKEN }}
           fetch-depth: 0
+
+      - name: Checkout SLSA build tools
+        uses: actions/checkout@v4
+        with:
+          repository: PAIR-Systems-Inc/slsa
+          path: __slsa__
+
+      - name: Install Makefile.slsa
+        run: cp __slsa__/Makefile.slsa .
 
       - name: Setup Docker for Server
         uses: ./.github/actions/setup-docker
@@ -83,23 +95,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
 
-      # - name: Get server image tags
-      #   id: server-tags
-      #   run: |
-      #     TAGS=$(make docker-tags)
-      #     echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-      #     echo "$TAGS" >> "$GITHUB_OUTPUT"
-      #     echo "EOF" >> "$GITHUB_OUTPUT"
+      - name: Compute docker tags and build metadata
+        id: meta
+        run: |
+          MAKEFILE="Makefile.slsa"
 
-      # - name: Build and push server image
-      #   id: build-server
-      #   uses: docker/build-push-action@v6
-      #   with:
-      #     context: .
-      #     file: server/Dockerfile
-      #     platforms: linux/amd64,linux/arm64
-      #     push: false
-      #     tags: ${{ steps.server-tags.outputs.tags }}
+          TAGS=$(make -f "$MAKEFILE" docker-tags)
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+          BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
+          echo "build-args<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$BUILD_ARGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          LABELS=$(make -f "$MAKEFILE" docker-labels)
+          echo "labels<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LABELS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: fossa-scan
+        uses: fossas/fossa-action@v1.8.0
+        with:
+          api-key: ${{ secrets.FOSSA_API_KEY }}
+          generate-report: html
+
+      - name: Save fossa report
+        run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
+
+      - name: Build and push server image
+        id: build-server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: ${{ steps.meta.outputs.build-args }}
+          labels: ${{ steps.meta.outputs.labels }}
 
   docker-build-hardened:
     runs-on: ubuntu-latest
@@ -109,13 +142,22 @@ jobs:
     outputs:
       digest: ${{ steps.build-server-hardened.outputs.digest }}
     steps:
-      - name: Checkout code
+      - name: Checkout goodmem
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.goodmem_repo }}
-          ref: ${{ inputs.goodmem_ref }}
+          repository: ${{ inputs.repo }}
+          ref: ${{ inputs.ref }}
           token: ${{ secrets.REPO_TOKEN }}
           fetch-depth: 0
+
+      - name: Checkout SLSA build tools
+        uses: actions/checkout@v4
+        with:
+          repository: PAIR-Systems-Inc/slsa
+          path: __slsa__
+
+      - name: Install Makefile.slsa
+        run: cp __slsa__/Makefile.slsa .
 
       - name: Setup Docker for Server
         uses: ./.github/actions/setup-docker
@@ -127,23 +169,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
 
-      # - name: Get hardened server image tags
-      #   id: server-hardened-tags
-      #   run: |
-      #     TAGS=$(make docker-hardened-tags)
-      #     echo "tags<<EOF" >> "$GITHUB_OUTPUT"
-      #     echo "$TAGS" >> "$GITHUB_OUTPUT"
-      #     echo "EOF" >> "$GITHUB_OUTPUT"
+      - name: Compute docker tags and build metadata
+        id: meta
+        run: |
+          MAKEFILE="Makefile.slsa"
 
-      # - name: Build and push hardened server image
-      #   id: build-server-hardened
-      #   uses: docker/build-push-action@v6
-      #   with:
-      #     context: .
-      #     file: server/Dockerfile.hardened
-      #     platforms: linux/amd64,linux/arm64
-      #     push: false
-      #     tags: ${{ steps.server-hardened-tags.outputs.tags }}
+          TAGS=$(make -f "$MAKEFILE" docker-hardened-tags)
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+          BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
+          echo "build-args<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$BUILD_ARGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          LABELS=$(make -f "$MAKEFILE" docker-hardened-labels)
+          echo "labels<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$LABELS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: fossa-scan
+        uses: fossas/fossa-action@v1.8.0
+        with:
+          api-key: ${{ secrets.FOSSA_API_KEY }}
+          generate-report: html
+
+      - name: Save fossa report
+        run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
+
+      - name: Build and push hardened server image
+        id: build-server-hardened
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile.hardened
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: ${{ steps.meta.outputs.build-args }}
+          labels: ${{ steps.meta.outputs.labels }}
 
   container-provenance-server:
     needs: [docker-build]
@@ -179,6 +242,23 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout goodmem
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.REPO_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout SLSA build tools
+        uses: actions/checkout@v4
+        with:
+          repository: PAIR-Systems-Inc/slsa
+          path: __slsa__
+
+      - name: Install Makefile.slsa
+        run: cp __slsa__/Makefile.slsa .
+
       - name: Secure download provenance
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
         with:
@@ -195,22 +275,6 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
-          ATTESTATIONS: ${{ needs.slsa-run.outputs.attestations-download-name }}
-          REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-
-          tag="$(make release-tags)"
-
-          # Create the release
-          gh -R "$GITHUB_REPOSITORY" release create "$tag" --generate-notes
-
-          # Upload provenance attestations
-          find "$ATTESTATIONS" -type f | while IFS= read -r file; do
-            gh -R "$GITHUB_REPOSITORY" release upload "$tag" "$file"
-          done
-
-          # Upload build artifacts
-          find artifacts/ -type f | while IFS= read -r file; do
-            gh -R "$GITHUB_REPOSITORY" release upload "$tag" "$file"
-          done
+          ATTESTATIONS_DIR: ${{ needs.slsa-run.outputs.attestations-download-name }}
+          ARTIFACTS_DIR: artifacts
+        run: make -f Makefile.slsa github-release

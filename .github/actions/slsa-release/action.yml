@@ -77,7 +77,7 @@ runs:
     - name: Build artifacts
       shell: bash
       run: |
-        make artifacts-only
+        make release-artifacts
 
     - name: Generate layout file
       id: layout

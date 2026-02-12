@@ -1,0 +1,73 @@
+IMAGE_PREFIX := ghcr.io/pair-systems-inc/goodmem/server
+IMAGE_PREFIX_HARDENED := ghcr.io/pair-systems-inc/goodmem/server-hardened
+THIRD_PARTY_NOTICES ?= THIRD_PARTY_LICENSES.html
+SELF := $(MAKE) -f Makefile.slsa
+
+GOODMEM_VERSION = $(shell git tag --merged HEAD --list "server-v*" 2>/dev/null | sort -V | tail -n1 || echo "server-v0.0.0")
+BUILD_COMMIT_SHA = $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+BUILD_GIT_DESCRIBE = $(shell git describe --tags --always --match="server-v*" --dirty 2>/dev/null || echo "unknown")
+
+SHELL := /bin/bash
+.SHELLFLAGS := -e -u -o pipefail -c
+
+.PHONY: next-version
+next-version:
+	@LATEST_TAG=$$(git tag -l "server-v*" | grep -E "^server-v[0-9]+\.[0-9]+\.[0-9]+$$" | sort -V | tail -n1) && \
+	test -n "$$LATEST_TAG" || { echo "Error: No server-v* tags found" >&2; exit 1; } && \
+	VERSION=$$(echo "$$LATEST_TAG" | sed 's/^server-v//') && \
+	MAJOR=$$(echo "$$VERSION" | cut -d. -f1) && \
+	MINOR=$$(echo "$$VERSION" | cut -d. -f2) && \
+	PATCH=$$(echo "$$VERSION" | cut -d. -f3) && \
+	NEW_PATCH=$$((PATCH + 1)) && \
+	echo "$${MAJOR}.$${MINOR}.$${NEW_PATCH}"
+
+.PHONY: release-tag
+release-tag:
+	@echo "server-v$$($(SELF) --no-print-directory next-version)"
+
+.PHONY: docker-tags
+docker-tags:
+	@VERSION=$$($(SELF) --no-print-directory next-version) && \
+	echo "$(IMAGE_PREFIX):v$$VERSION,$(IMAGE_PREFIX):latest,$(IMAGE_PREFIX):$(BUILD_COMMIT_SHA)"
+
+.PHONY: docker-hardened-tags
+docker-hardened-tags:
+	@VERSION=$$($(SELF) --no-print-directory next-version) && \
+	echo "$(IMAGE_PREFIX_HARDENED):v$$VERSION,$(IMAGE_PREFIX_HARDENED):latest,$(IMAGE_PREFIX_HARDENED):$(BUILD_COMMIT_SHA)"
+
+.PHONY: docker-build-args
+docker-build-args:
+	@echo "GOODMEM_VERSION=$(GOODMEM_VERSION)"
+	@echo "BUILD_COMMIT_SHA=$(BUILD_COMMIT_SHA)"
+	@echo "BUILD_GIT_DESCRIBE=$(BUILD_GIT_DESCRIBE)"
+	@echo "THIRD_PARTY_LICENSES=$(THIRD_PARTY_NOTICES)"
+
+.PHONY: docker-labels
+docker-labels:
+	@echo "org.opencontainers.image.version=$(GOODMEM_VERSION)"
+	@echo "org.opencontainers.image.revision=$(BUILD_COMMIT_SHA)"
+	@echo "org.opencontainers.image.created=$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	@echo "org.opencontainers.image.description=GoodMem memory management server"
+	@echo "org.opencontainers.image.title=GoodMem Server"
+
+.PHONY: docker-hardened-labels
+docker-hardened-labels:
+	@echo "org.opencontainers.image.version=$(GOODMEM_VERSION)"
+	@echo "org.opencontainers.image.revision=$(BUILD_COMMIT_SHA)"
+	@echo "org.opencontainers.image.created=$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+	@echo "org.opencontainers.image.description=GoodMem memory management server"
+	@echo "org.opencontainers.image.title=GoodMem Server (Hardened)"
+
+.PHONY: github-release
+github-release:
+	@TAG=$$($(SELF) --no-print-directory release-tag) && \
+	echo "Creating release $$TAG..." && \
+	gh -R "$$GITHUB_REPOSITORY" release create "$$TAG" --generate-notes && \
+	echo "Uploading provenance attestations..." && \
+	find "$$ATTESTATIONS_DIR" -type f | while IFS= read -r file; do \
+		gh -R "$$GITHUB_REPOSITORY" release upload "$$TAG" "$$file"; \
+	done && \
+	echo "Uploading build artifacts..." && \
+	find "$$ARTIFACTS_DIR" -type f | while IFS= read -r file; do \
+		gh -R "$$GITHUB_REPOSITORY" release upload "$$TAG" "$$file"; \
+	done
