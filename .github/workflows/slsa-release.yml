@@ -220,6 +220,7 @@ jobs:
     with:
       image: ghcr.io/pair-systems-inc/goodmem/server
       digest: ${{ needs.docker-build.outputs.digest }}
+      registry-username: ${{ github.actor }}
       private-repository: true
     secrets:
       registry-password: ${{ secrets.REPO_TOKEN }}
@@ -234,6 +235,7 @@ jobs:
     with:
       image: ghcr.io/pair-systems-inc/goodmem/server-hardened
       digest: ${{ needs.docker-build-hardened.outputs.digest }}
+      registry-username: ${{ github.actor }}
       private-repository: true
     secrets:
       registry-password: ${{ secrets.REPO_TOKEN }}
