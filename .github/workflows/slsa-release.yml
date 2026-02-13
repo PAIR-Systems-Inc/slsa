@@ -64,6 +64,7 @@ jobs:
       slsa-token: ${{ needs.slsa-setup.outputs.slsa-token }}
     secrets:
       secret1: ${{ secrets.REPO_TOKEN }}
+      secret2: ${{ secrets.FOSSA_API_KEY }}
 
   docker-build:
     runs-on: ubuntu-latest
