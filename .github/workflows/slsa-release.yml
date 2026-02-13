@@ -80,7 +80,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PAIR-Systems-Inc/slsa
-          ref: debug
           path: __slsa__
 
       - name: Install Makefile.slsa
@@ -155,7 +154,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PAIR-Systems-Inc/slsa
-          ref: debug
           path: __slsa__
 
       - name: Install Makefile.slsa
@@ -258,7 +256,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PAIR-Systems-Inc/slsa
-          ref: debug
           path: __slsa__
 
       - name: Install Makefile.slsa
