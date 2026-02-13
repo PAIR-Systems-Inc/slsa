@@ -13,6 +13,11 @@ on:
         description: "Git ref (branch, tag, SHA) to checkout"
         required: true
         type: string
+      draft-release:
+        description: "Draft release mode: pushes to not-for-release image names and creates a draft GitHub release"
+        required: false
+        type: boolean
+        default: false
     secrets:
       REPO_TOKEN:
         description: "GitHub token with access to clone private repo"
@@ -67,6 +72,7 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.build-server.outputs.digest }}
+      image: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout goodmem
         uses: actions/checkout@v4
@@ -95,13 +101,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
 
-      - name: Compute docker tags and build metadata
+      - name: Compute build metadata
         id: meta
         run: |
           MAKEFILE="Makefile.slsa"
-
-          TAGS=$(make -f "$MAKEFILE" docker-tags)
-          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
           BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
           echo "build-args<<EOF" >> "$GITHUB_OUTPUT"
@@ -122,6 +125,15 @@ jobs:
       - name: Save fossa report
         run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
 
+      - name: Select image name
+        id: image
+        run: |
+          if [ "${{ inputs.draft-release }}" = "true" ]; then
+            echo "name=ghcr.io/pair-systems-inc/goodmem/not-for-release-server" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=ghcr.io/pair-systems-inc/goodmem/server" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push server image
         id: build-server
         uses: docker/build-push-action@v6
@@ -129,10 +141,10 @@ jobs:
           context: .
           file: server/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          provenance: false
           build-args: ${{ steps.meta.outputs.build-args }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true
 
   docker-build-hardened:
     runs-on: ubuntu-latest
@@ -141,6 +153,7 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.build-server-hardened.outputs.digest }}
+      image: ${{ steps.image.outputs.name }}
     steps:
       - name: Checkout goodmem
         uses: actions/checkout@v4
@@ -169,13 +182,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
 
-      - name: Compute docker tags and build metadata
+      - name: Compute build metadata
         id: meta
         run: |
           MAKEFILE="Makefile.slsa"
-
-          TAGS=$(make -f "$MAKEFILE" docker-hardened-tags)
-          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
           BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
           echo "build-args<<EOF" >> "$GITHUB_OUTPUT"
@@ -196,6 +206,15 @@ jobs:
       - name: Save fossa report
         run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
 
+      - name: Select image name
+        id: image
+        run: |
+          if [ "${{ inputs.draft-release }}" = "true" ]; then
+            echo "name=ghcr.io/pair-systems-inc/goodmem/not-for-release-server-hardened" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=ghcr.io/pair-systems-inc/goodmem/server-hardened" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push hardened server image
         id: build-server-hardened
         uses: docker/build-push-action@v6
@@ -203,10 +222,10 @@ jobs:
           context: .
           file: server/Dockerfile.hardened
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          provenance: false
           build-args: ${{ steps.meta.outputs.build-args }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true
 
   container-provenance-server:
     needs: [docker-build]
@@ -216,12 +235,14 @@ jobs:
       actions: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
     with:
-      image: ghcr.io/pair-systems-inc/goodmem/server
+      image: ${{ needs.docker-build.outputs.image }}
       digest: ${{ needs.docker-build.outputs.digest }}
       registry-username: ${{ github.actor }}
+      provenance-registry-username: ${{ github.actor }}
       private-repository: true
     secrets:
       registry-password: ${{ secrets.REPO_TOKEN }}
+      provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
   container-provenance-server-hardened:
     needs: [docker-build-hardened]
@@ -231,17 +252,20 @@ jobs:
       actions: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
     with:
-      image: ghcr.io/pair-systems-inc/goodmem/server-hardened
+      image: ${{ needs.docker-build-hardened.outputs.image }}
       digest: ${{ needs.docker-build-hardened.outputs.digest }}
       registry-username: ${{ github.actor }}
+      provenance-registry-username: ${{ github.actor }}
       private-repository: true
     secrets:
       registry-password: ${{ secrets.REPO_TOKEN }}
+      provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
   publish:
-    needs: [slsa-run, container-provenance-server, container-provenance-server-hardened]
+    needs: [slsa-run, docker-build, docker-build-hardened, container-provenance-server, container-provenance-server-hardened]
     permissions:
       contents: write
+      packages: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -261,6 +285,13 @@ jobs:
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
 
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.REPO_TOKEN }}
+
       - name: Secure download provenance
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
         with:
@@ -279,4 +310,7 @@ jobs:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
           ATTESTATIONS_DIR: ${{ needs.slsa-run.outputs.attestations-download-name }}
           ARTIFACTS_DIR: artifacts
+          DIGEST: ${{ needs.docker-build.outputs.digest }}
+          DIGEST_HARDENED: ${{ needs.docker-build-hardened.outputs.digest }}
+          DRAFT_RELEASE: ${{ inputs.draft-release }}
         run: make -f Makefile.slsa github-release

@@ -1,5 +1,3 @@
-IMAGE_PREFIX := ghcr.io/pair-systems-inc/goodmem/server
-IMAGE_PREFIX_HARDENED := ghcr.io/pair-systems-inc/goodmem/server-hardened
 THIRD_PARTY_NOTICES ?= THIRD_PARTY_LICENSES.html
 SELF := $(MAKE) -f Makefile.slsa
 
@@ -9,6 +7,22 @@ BUILD_GIT_DESCRIBE = $(shell git describe --tags --always --match="server-v*" --
 
 SHELL := /bin/bash
 .SHELLFLAGS := -e -u -o pipefail -c
+
+.PHONY: image-prefix
+image-prefix:
+	@if [ "$(DRAFT_RELEASE)" = "true" ]; then \
+		echo "ghcr.io/pair-systems-inc/goodmem/not-for-release-server"; \
+	else \
+		echo "ghcr.io/pair-systems-inc/goodmem/server"; \
+	fi
+
+.PHONY: image-prefix-hardened
+image-prefix-hardened:
+	@if [ "$(DRAFT_RELEASE)" = "true" ]; then \
+		echo "ghcr.io/pair-systems-inc/goodmem/not-for-release-server-hardened"; \
+	else \
+		echo "ghcr.io/pair-systems-inc/goodmem/server-hardened"; \
+	fi
 
 .PHONY: next-version
 next-version:
@@ -27,13 +41,15 @@ release-tag:
 
 .PHONY: docker-tags
 docker-tags:
-	@VERSION=$$($(SELF) --no-print-directory next-version) && \
-	echo "$(IMAGE_PREFIX):v$$VERSION,$(IMAGE_PREFIX):latest,$(IMAGE_PREFIX):$(BUILD_COMMIT_SHA)"
+	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
+	VERSION=$$($(SELF) --no-print-directory next-version) && \
+	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
 
 .PHONY: docker-hardened-tags
 docker-hardened-tags:
-	@VERSION=$$($(SELF) --no-print-directory next-version) && \
-	echo "$(IMAGE_PREFIX_HARDENED):v$$VERSION,$(IMAGE_PREFIX_HARDENED):latest,$(IMAGE_PREFIX_HARDENED):$(BUILD_COMMIT_SHA)"
+	@PREFIX=$$($(SELF) --no-print-directory image-prefix-hardened) && \
+	VERSION=$$($(SELF) --no-print-directory next-version) && \
+	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
 
 .PHONY: docker-build-args
 docker-build-args:
@@ -60,9 +76,24 @@ docker-hardened-labels:
 
 .PHONY: github-release
 github-release:
-	@TAG=$$($(SELF) --no-print-directory release-tag) && \
+	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
+	PREFIX_HARDENED=$$($(SELF) --no-print-directory image-prefix-hardened) && \
+	VERSION=$$($(SELF) --no-print-directory next-version) && \
+	RELEASE_FLAGS="" && \
+	if [ "$(DRAFT_RELEASE)" = "true" ]; then RELEASE_FLAGS="--draft"; fi && \
+	echo "Promoting server image..." && \
+	for TAG in "$$PREFIX:v$$VERSION" "$$PREFIX:latest" "$$PREFIX:$(BUILD_COMMIT_SHA)"; do \
+		echo "  $$PREFIX@$$DIGEST -> $$TAG" && \
+		docker buildx imagetools create --tag "$$TAG" "$$PREFIX@$$DIGEST"; \
+	done && \
+	echo "Promoting hardened server image..." && \
+	for TAG in "$$PREFIX_HARDENED:v$$VERSION" "$$PREFIX_HARDENED:latest" "$$PREFIX_HARDENED:$(BUILD_COMMIT_SHA)"; do \
+		echo "  $$PREFIX_HARDENED@$$DIGEST_HARDENED -> $$TAG" && \
+		docker buildx imagetools create --tag "$$TAG" "$$PREFIX_HARDENED@$$DIGEST_HARDENED"; \
+	done && \
+	TAG="server-v$$VERSION" && \
 	echo "Creating release $$TAG..." && \
-	gh -R "$$GITHUB_REPOSITORY" release create "$$TAG" --generate-notes && \
+	gh -R "$$GITHUB_REPOSITORY" release create "$$TAG" $$RELEASE_FLAGS --generate-notes && \
 	echo "Uploading provenance attestations..." && \
 	find "$$ATTESTATIONS_DIR" -type f | while IFS= read -r file; do \
 		gh -R "$$GITHUB_REPOSITORY" release upload "$$TAG" "$$file"; \
