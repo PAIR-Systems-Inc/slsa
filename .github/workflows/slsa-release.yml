@@ -268,7 +268,7 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout goodmem
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.repo }}
