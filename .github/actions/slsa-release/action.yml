@@ -14,7 +14,12 @@ inputs:
     description: "REPO_TOKEN - GitHub token for cloning"
     type: string
     required: false
+  slsa-workflow-secret2:
+    description: "FOSSA_API_KEY - Token to generate fossa reports"
+    type: string
+    required: false
   # Unused secret inputs
+  slsa-workflow-secret3: {}
   slsa-workflow-secret4: {}
   slsa-workflow-secret5: {}
   slsa-workflow-secret6: {}
@@ -76,6 +81,8 @@ runs:
 
     - name: Build artifacts
       shell: bash
+      env:
+        FOSSA_API_KEY: ${{ inputs.slsa-workflow-secret2 }}
       run: |
         make release-artifacts DRY_RUN=false
 
