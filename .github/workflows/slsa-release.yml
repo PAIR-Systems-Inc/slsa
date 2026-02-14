@@ -142,6 +142,7 @@ jobs:
           context: .
           file: server/Dockerfile
           platforms: linux/amd64,linux/arm64
+          push: true
           provenance: false
           build-args: ${{ steps.meta.outputs.build-args }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -223,6 +224,7 @@ jobs:
           context: .
           file: server/Dockerfile.hardened
           platforms: linux/amd64,linux/arm64
+          push: true
           provenance: false
           build-args: ${{ steps.meta.outputs.build-args }}
           labels: ${{ steps.meta.outputs.labels }}
