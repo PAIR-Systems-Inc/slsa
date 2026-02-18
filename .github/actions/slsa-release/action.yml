@@ -101,5 +101,5 @@ runs:
       id: upload
       uses: slsa-framework/slsa-github-generator/.github/actions/secure-upload-folder@v2.1.0
       with:
-        name: "${{ steps.rng.outputs.random }}-artifacts"
+        name: "artifacts-${{ steps.rng.outputs.random }}"
         path: dist
