@@ -312,7 +312,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.REPO_TOKEN }}
           ATTESTATIONS_DIR: ${{ needs.slsa-run.outputs.attestations-download-name }}
-          ARTIFACTS_DIR: artifacts
+          ARTIFACTS_DIR: dist
           DIGEST: ${{ needs.docker-build.outputs.digest }}
           DIGEST_HARDENED: ${{ needs.docker-build-hardened.outputs.digest }}
           DRAFT_RELEASE: ${{ inputs.draft-release }}
