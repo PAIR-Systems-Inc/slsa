@@ -8,6 +8,28 @@ BUILD_GIT_DESCRIBE = $(shell git describe --tags --always --match="server-v*" --
 SHELL := /bin/bash
 .SHELLFLAGS := -e -u -o pipefail -c
 
+# ---------------------------------------------------------------------------
+# bump-tag: create a local lightweight tag for the next patch version.
+# Must run before any target that needs GOODMEM_VERSION / BUILD_GIT_DESCRIBE.
+# Idempotent — skips if the tag already exists.
+# ---------------------------------------------------------------------------
+.PHONY: bump-tag
+bump-tag:
+	@LATEST_TAG=$$(git tag --merged HEAD --list "server-v*" 2>/dev/null | sort -V | tail -n1) && \
+	test -n "$$LATEST_TAG" || { echo "Error: No server-v* tags found" >&2; exit 1; } && \
+	VERSION=$$(echo "$$LATEST_TAG" | sed 's/^server-v//') && \
+	MAJOR=$$(echo "$$VERSION" | cut -d. -f1) && \
+	MINOR=$$(echo "$$VERSION" | cut -d. -f2) && \
+	PATCH=$$(echo "$$VERSION" | cut -d. -f3) && \
+	NEW_PATCH=$$((PATCH + 1)) && \
+	NEXT_TAG="server-v$${MAJOR}.$${MINOR}.$${NEW_PATCH}" && \
+	if git rev-parse "$$NEXT_TAG" >/dev/null 2>&1; then \
+		echo "Tag $$NEXT_TAG already exists — skipping"; \
+	else \
+		git tag "$$NEXT_TAG" HEAD && \
+		echo "Created local tag $$NEXT_TAG"; \
+	fi
+
 .PHONY: image-prefix
 image-prefix:
 	@if [ "$(DRAFT_RELEASE)" = "true" ]; then \
@@ -24,31 +46,26 @@ image-prefix-hardened:
 		echo "ghcr.io/pair-systems-inc/goodmem/server-hardened"; \
 	fi
 
-.PHONY: next-version
-next-version:
-	@LATEST_TAG=$$(git tag -l "server-v*" | grep -E "^server-v[0-9]+\.[0-9]+\.[0-9]+$$" | sort -V | tail -n1) && \
-	test -n "$$LATEST_TAG" || { echo "Error: No server-v* tags found" >&2; exit 1; } && \
-	VERSION=$$(echo "$$LATEST_TAG" | sed 's/^server-v//') && \
-	MAJOR=$$(echo "$$VERSION" | cut -d. -f1) && \
-	MINOR=$$(echo "$$VERSION" | cut -d. -f2) && \
-	PATCH=$$(echo "$$VERSION" | cut -d. -f3) && \
-	NEW_PATCH=$$((PATCH + 1)) && \
-	echo "$${MAJOR}.$${MINOR}.$${NEW_PATCH}"
+# After bump-tag has run, GOODMEM_VERSION already points to the bumped tag.
+# current-version just strips the server-v prefix.
+.PHONY: current-version
+current-version:
+	@echo "$(GOODMEM_VERSION)" | sed 's/^server-v//'
 
 .PHONY: release-tag
 release-tag:
-	@echo "server-v$$($(SELF) --no-print-directory next-version)"
+	@echo "$(GOODMEM_VERSION)"
 
 .PHONY: docker-tags
 docker-tags:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
-	VERSION=$$($(SELF) --no-print-directory next-version) && \
+	VERSION=$$($(SELF) --no-print-directory current-version) && \
 	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
 
 .PHONY: docker-hardened-tags
 docker-hardened-tags:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix-hardened) && \
-	VERSION=$$($(SELF) --no-print-directory next-version) && \
+	VERSION=$$($(SELF) --no-print-directory current-version) && \
 	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
 
 .PHONY: docker-build-args
@@ -78,7 +95,7 @@ docker-hardened-labels:
 github-release:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
 	PREFIX_HARDENED=$$($(SELF) --no-print-directory image-prefix-hardened) && \
-	VERSION=$$($(SELF) --no-print-directory next-version) && \
+	VERSION=$$($(SELF) --no-print-directory current-version) && \
 	RELEASE_FLAGS="" && \
 	if [ "$(DRAFT_RELEASE)" = "true" ]; then RELEASE_FLAGS="--draft"; fi && \
 	echo "Promoting server image..." && \
