@@ -92,6 +92,9 @@ jobs:
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
 
+      - name: Bump version tag
+        run: make -f Makefile.slsa bump-tag
+
       - name: Setup Docker for Server
         uses: ./.github/actions/setup-docker
 
@@ -173,6 +176,9 @@ jobs:
 
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
+
+      - name: Bump version tag
+        run: make -f Makefile.slsa bump-tag
 
       - name: Setup Docker for Server
         uses: ./.github/actions/setup-docker
@@ -287,6 +293,9 @@ jobs:
 
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
+
+      - name: Bump version tag
+        run: make -f Makefile.slsa bump-tag
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
