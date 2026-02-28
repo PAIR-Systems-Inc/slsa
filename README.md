@@ -22,7 +22,7 @@ References:
 ```bash
 PROV=~/Downloads/goodmem-linux-amd64.tar.gz.build.slsa
 ART=~/Downloads/goodmem-linux-amd64.tar.gz
-BUILDER_ID="https://github.com/PAIR-Systems-Inc/slsa/.github/workflows/slsa-release.yml@refs/tags/.*$"
+BUILDER_ID="https://github.com/PAIR-Systems-Inc/slsa/.github/workflows/slsa-release.yml@<latest slsa workflow tag>"
 
 slsa-verifier verify-artifact \
   --provenance-path "$PROV" \
@@ -35,7 +35,7 @@ slsa-verifier verify-artifact \
 ### Verify a container image provenance attestation
 
 ```bash
-IMAGE="ghcr.io/pair-systems-inc/goodmem/server@sha256:21e5832e9db9be4740483d867e87af9f91e7c14e0595ff03288d253a8bfcea05"
+IMAGE="ghcr.io/pair-systems-inc/goodmem/server@<image digest>
 
 slsa-verifier verify-image \
   --source-uri github.com/PAIR-Systems-Inc/goodmem \
