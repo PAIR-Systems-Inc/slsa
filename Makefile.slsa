@@ -38,14 +38,6 @@ image-prefix:
 		echo "ghcr.io/pair-systems-inc/goodmem/server"; \
 	fi
 
-.PHONY: image-prefix-hardened
-image-prefix-hardened:
-	@if [ "$(DRAFT_RELEASE)" = "true" ]; then \
-		echo "ghcr.io/pair-systems-inc/goodmem/not-for-release-server-hardened"; \
-	else \
-		echo "ghcr.io/pair-systems-inc/goodmem/server-hardened"; \
-	fi
-
 # After bump-tag has run, GOODMEM_VERSION already points to the bumped tag.
 # current-version just strips the server-v prefix.
 .PHONY: current-version
@@ -59,12 +51,6 @@ release-tag:
 .PHONY: docker-tags
 docker-tags:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
-	VERSION=$$($(SELF) --no-print-directory current-version) && \
-	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
-
-.PHONY: docker-hardened-tags
-docker-hardened-tags:
-	@PREFIX=$$($(SELF) --no-print-directory image-prefix-hardened) && \
 	VERSION=$$($(SELF) --no-print-directory current-version) && \
 	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
 
@@ -83,18 +69,9 @@ docker-labels:
 	@echo "org.opencontainers.image.description=GoodMem memory management server"
 	@echo "org.opencontainers.image.title=GoodMem Server"
 
-.PHONY: docker-hardened-labels
-docker-hardened-labels:
-	@echo "org.opencontainers.image.version=$(GOODMEM_VERSION)"
-	@echo "org.opencontainers.image.revision=$(BUILD_COMMIT_SHA)"
-	@echo "org.opencontainers.image.created=$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-	@echo "org.opencontainers.image.description=GoodMem memory management server"
-	@echo "org.opencontainers.image.title=GoodMem Server (Hardened)"
-
 .PHONY: github-release
 github-release:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
-	PREFIX_HARDENED=$$($(SELF) --no-print-directory image-prefix-hardened) && \
 	VERSION=$$($(SELF) --no-print-directory current-version) && \
 	RELEASE_FLAGS="" && \
 	if [ "$(DRAFT_RELEASE)" = "true" ]; then RELEASE_FLAGS="--draft"; fi && \
@@ -102,11 +79,6 @@ github-release:
 	for TAG in "$$PREFIX:v$$VERSION" "$$PREFIX:latest" "$$PREFIX:$(BUILD_COMMIT_SHA)"; do \
 		echo "  $$PREFIX@$$DIGEST -> $$TAG" && \
 		docker buildx imagetools create --tag "$$TAG" "$$PREFIX@$$DIGEST"; \
-	done && \
-	echo "Promoting hardened server image..." && \
-	for TAG in "$$PREFIX_HARDENED:v$$VERSION" "$$PREFIX_HARDENED:latest" "$$PREFIX_HARDENED:$(BUILD_COMMIT_SHA)"; do \
-		echo "  $$PREFIX_HARDENED@$$DIGEST_HARDENED -> $$TAG" && \
-		docker buildx imagetools create --tag "$$TAG" "$$PREFIX_HARDENED@$$DIGEST_HARDENED"; \
 	done && \
 	TAG="server-v$$VERSION" && \
 	echo "Creating release $$TAG..." && \

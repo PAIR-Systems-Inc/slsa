@@ -151,91 +151,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true
 
-  docker-build-hardened:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      digest: ${{ steps.build-server-hardened.outputs.digest }}
-      image: ${{ steps.image.outputs.name }}
-    steps:
-      - name: Checkout goodmem
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.repo }}
-          ref: ${{ inputs.ref }}
-          token: ${{ secrets.REPO_TOKEN }}
-          fetch-depth: 0
-
-      - name: Checkout SLSA build tools
-        uses: actions/checkout@v4
-        with:
-          repository: PAIR-Systems-Inc/slsa
-          path: __slsa__
-
-      - name: Install Makefile.slsa
-        run: cp __slsa__/Makefile.slsa .
-
-      - name: Bump version tag
-        run: make -f Makefile.slsa bump-tag
-
-      - name: Setup Docker for Server
-        uses: ./.github/actions/setup-docker
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.REPO_TOKEN }}
-
-      - name: Compute build metadata
-        id: meta
-        run: |
-          MAKEFILE="Makefile.slsa"
-
-          BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
-          echo "build-args<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$BUILD_ARGS" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-          LABELS=$(make -f "$MAKEFILE" docker-hardened-labels)
-          echo "labels<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$LABELS" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: fossa-scan
-        uses: fossas/fossa-action@v1.8.0
-        with:
-          api-key: ${{ secrets.FOSSA_API_KEY }}
-          generate-report: html
-
-      - name: Save fossa report
-        run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
-
-      - name: Select image name
-        id: image
-        run: |
-          if [ "${{ inputs.draft-release }}" = "true" ]; then
-            echo "name=ghcr.io/pair-systems-inc/goodmem/not-for-release-server-hardened" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=ghcr.io/pair-systems-inc/goodmem/server-hardened" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Build and push hardened server image
-        id: build-server-hardened
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: server/Dockerfile.hardened
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: false
-          build-args: ${{ steps.meta.outputs.build-args }}
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true
-
   container-provenance-server:
     needs: [docker-build]
     permissions:
@@ -253,25 +168,8 @@ jobs:
       registry-password: ${{ secrets.REPO_TOKEN }}
       provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
-  container-provenance-server-hardened:
-    needs: [docker-build-hardened]
-    permissions:
-      id-token: write
-      packages: write
-      actions: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
-    with:
-      image: ${{ needs.docker-build-hardened.outputs.image }}
-      digest: ${{ needs.docker-build-hardened.outputs.digest }}
-      registry-username: ${{ github.actor }}
-      provenance-registry-username: ${{ github.actor }}
-      private-repository: true
-    secrets:
-      registry-password: ${{ secrets.REPO_TOKEN }}
-      provenance-registry-password: ${{ secrets.REPO_TOKEN }}
-
   publish:
-    needs: [slsa-run, docker-build, docker-build-hardened, container-provenance-server, container-provenance-server-hardened]
+    needs: [slsa-run, docker-build, container-provenance-server]
     permissions:
       contents: write
       packages: write
@@ -323,6 +221,5 @@ jobs:
           ATTESTATIONS_DIR: ${{ needs.slsa-run.outputs.attestations-download-name }}
           ARTIFACTS_DIR: dist
           DIGEST: ${{ needs.docker-build.outputs.digest }}
-          DIGEST_HARDENED: ${{ needs.docker-build-hardened.outputs.digest }}
           DRAFT_RELEASE: ${{ inputs.draft-release }}
         run: make -f Makefile.slsa github-release
