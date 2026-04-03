@@ -9,20 +9,30 @@ SHELL := /bin/bash
 .SHELLFLAGS := -e -u -o pipefail -c
 
 # ---------------------------------------------------------------------------
-# bump-tag: create a local lightweight tag for the next patch version.
+# bump-tag: create a local lightweight tag based on versions.txt state.
+# If versions.txt was modified in this commit → stable release (server-vX.Y.Z).
+# Otherwise → preview release (server-vX.Y.Z-preview.N).
 # Must run before any target that needs GOODMEM_VERSION / BUILD_GIT_DESCRIBE.
 # Idempotent — skips if the tag already exists.
 # ---------------------------------------------------------------------------
 .PHONY: bump-tag
 bump-tag:
-	@LATEST_TAG=$$(git tag --merged HEAD --list "server-v*" 2>/dev/null | sort -V | tail -n1) && \
-	test -n "$$LATEST_TAG" || { echo "Error: No server-v* tags found" >&2; exit 1; } && \
-	VERSION=$$(echo "$$LATEST_TAG" | sed 's/^server-v//') && \
-	MAJOR=$$(echo "$$VERSION" | cut -d. -f1) && \
-	MINOR=$$(echo "$$VERSION" | cut -d. -f2) && \
-	PATCH=$$(echo "$$VERSION" | cut -d. -f3) && \
-	NEW_PATCH=$$((PATCH + 1)) && \
-	NEXT_TAG="server-v$${MAJOR}.$${MINOR}.$${NEW_PATCH}" && \
+	@if [ -f versions.txt ] && ! git diff --quiet HEAD~1 -- versions.txt 2>/dev/null; then \
+		VERSION=$$(cat versions.txt | tr -d '[:space:]') && \
+		NEXT_TAG="server-v$$VERSION" && \
+		echo "Stable release: $$NEXT_TAG"; \
+	else \
+		LATEST_TAG=$$(git tag --merged HEAD --list "server-v*" 2>/dev/null | sort -V | tail -n1) && \
+		test -n "$$LATEST_TAG" || { echo "Error: No server-v* tags found" >&2; exit 1; } && \
+		if echo "$$LATEST_TAG" | grep -q -- '-preview\.'; then \
+			BASE=$$(echo "$$LATEST_TAG" | sed 's/-preview\.[0-9]*$$//') && \
+			PREV_NUM=$$(echo "$$LATEST_TAG" | sed 's/.*-preview\.//') && \
+			NEXT_TAG="$$BASE-preview.$$((PREV_NUM + 1))"; \
+		else \
+			NEXT_TAG="$$LATEST_TAG-preview.1"; \
+		fi && \
+		echo "Preview release: $$NEXT_TAG"; \
+	fi && \
 	if git rev-parse "$$NEXT_TAG" >/dev/null 2>&1; then \
 		echo "Tag $$NEXT_TAG already exists — skipping"; \
 	else \
@@ -52,7 +62,11 @@ release-tag:
 docker-tags:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
 	VERSION=$$($(SELF) --no-print-directory current-version) && \
-	echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"
+	if echo "$$VERSION" | grep -q -- '-preview\.'; then \
+		echo "$$PREFIX:v$$VERSION,$$PREFIX:preview,$$PREFIX:$(BUILD_COMMIT_SHA)"; \
+	else \
+		echo "$$PREFIX:v$$VERSION,$$PREFIX:latest,$$PREFIX:$(BUILD_COMMIT_SHA)"; \
+	fi
 
 .PHONY: docker-build-args
 docker-build-args:
@@ -74,9 +88,17 @@ github-release:
 	@PREFIX=$$($(SELF) --no-print-directory image-prefix) && \
 	VERSION=$$($(SELF) --no-print-directory current-version) && \
 	RELEASE_FLAGS="" && \
+	IS_PREVIEW=false && \
 	if [ "$(DRAFT_RELEASE)" = "true" ]; then RELEASE_FLAGS="--draft"; fi && \
+	if echo "$$VERSION" | grep -q -- '-preview\.'; then IS_PREVIEW=true; fi && \
 	echo "Promoting server image..." && \
-	for TAG in "$$PREFIX:v$$VERSION" "$$PREFIX:latest" "$$PREFIX:$(BUILD_COMMIT_SHA)"; do \
+	TAGS=("$$PREFIX:v$$VERSION" "$$PREFIX:$(BUILD_COMMIT_SHA)") && \
+	if [ "$$IS_PREVIEW" = true ]; then \
+		TAGS+=("$$PREFIX:preview"); \
+	else \
+		TAGS+=("$$PREFIX:latest"); \
+	fi && \
+	for TAG in "$${TAGS[@]}"; do \
 		echo "  $$PREFIX@$$DIGEST -> $$TAG" && \
 		docker buildx imagetools create --tag "$$TAG" "$$PREFIX@$$DIGEST"; \
 	done && \
@@ -90,4 +112,14 @@ github-release:
 	echo "Uploading build artifacts..." && \
 	find "$$ARTIFACTS_DIR" -type f | while IFS= read -r file; do \
 		gh -R "$$GITHUB_REPOSITORY" release upload "$$TAG" "$$file"; \
-	done
+	done && \
+	if [ "$$IS_PREVIEW" = true ]; then \
+		echo "Updating rolling server-preview release..." && \
+		gh -R "$$GITHUB_REPOSITORY" release delete server-preview --yes 2>/dev/null || true && \
+		gh -R "$$GITHUB_REPOSITORY" release create server-preview \
+			--title "Latest Preview ($$TAG)" \
+			--notes "Rolling preview release. Points to $$TAG." && \
+		find "$$ARTIFACTS_DIR" -type f | while IFS= read -r file; do \
+			gh -R "$$GITHUB_REPOSITORY" release upload server-preview "$$file"; \
+		done; \
+	fi
