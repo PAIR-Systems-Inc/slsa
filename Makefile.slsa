@@ -9,16 +9,16 @@ SHELL := /bin/bash
 .SHELLFLAGS := -e -u -o pipefail -c
 
 # ---------------------------------------------------------------------------
-# bump-tag: create a local lightweight tag based on versions.txt state.
-# If versions.txt was modified in this commit → stable release (server-vX.Y.Z).
+# bump-tag: create a local lightweight tag based on version.txt state.
+# If version.txt was modified in this commit → stable release (server-vX.Y.Z).
 # Otherwise → preview release (server-vX.Y.Z-preview.N).
 # Must run before any target that needs GOODMEM_VERSION / BUILD_GIT_DESCRIBE.
 # Idempotent — skips if the tag already exists.
 # ---------------------------------------------------------------------------
 .PHONY: bump-tag
 bump-tag:
-	@if [ -f versions.txt ] && ! git diff --quiet HEAD~1 -- versions.txt 2>/dev/null; then \
-		VERSION=$$(cat versions.txt | tr -d '[:space:]') && \
+	@if [ -f version.txt ] && ! git diff --quiet HEAD~1 -- version.txt 2>/dev/null; then \
+		VERSION=$$(cat version.txt | tr -d '[:space:]') && \
 		NEXT_TAG="server-v$$VERSION" && \
 		echo "Stable release: $$NEXT_TAG"; \
 	else \
