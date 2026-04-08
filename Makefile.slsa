@@ -42,7 +42,11 @@ release-tag:
 # gh release flags (--draft when DRAFT_RELEASE=true, empty otherwise)
 .PHONY: release-flags
 release-flags:
-	@if [ "$(DRAFT_RELEASE)" = "true" ]; then echo "--draft"; fi
+	@if [ "$(DRAFT_RELEASE)" = "true" ]; then \
+		echo "--draft"; \
+	elif [ "$(PREVIEW_NUMBER)" != "0" ]; then \
+		echo "--prerelease"; \
+	fi
 
 # Create a local lightweight tag. Idempotent.
 .PHONY: bump-tag
@@ -221,30 +225,40 @@ test:
 	[ "$$RESULT" = "ghcr.io/pair-systems-inc/goodmem/not-for-release-server" ] || { echo "FAIL: expected draft prefix, got $$RESULT" >&2; exit 1; } && \
 	echo "  image-prefix = $$RESULT  OK" && \
 	\
-	echo "--- Test 9: release-flags empty for normal release ---" && \
+	echo "--- Test 9: release-flags empty for stable release ---" && \
 	RESULT=$$(eval $$MK release-flags) && \
 	[ -z "$$RESULT" ] || { echo "FAIL: expected empty, got $$RESULT" >&2; exit 1; } && \
 	echo "  release-flags = (empty)  OK" && \
 	\
-	echo "--- Test 10: release-flags --draft for draft release ---" && \
+	echo "--- Test 10: release-flags --draft for draft stable release ---" && \
 	RESULT=$$(eval $$MK release-flags DRAFT_RELEASE=true) && \
 	[ "$$RESULT" = "--draft" ] || { echo "FAIL: expected --draft, got $$RESULT" >&2; exit 1; } && \
 	echo "  release-flags = $$RESULT  OK" && \
 	\
-	echo "--- Test 11: docker-tags for stable release ---" && \
+	echo "--- Test 11: docker-tags :latest for stable release ---" && \
 	RESULT=$$(eval $$MK docker-tags) && \
 	echo "$$RESULT" | grep -q ":latest" || { echo "FAIL: expected :latest in $$RESULT" >&2; exit 1; } && \
 	echo "$$RESULT" | grep -qv ":preview" || { echo "FAIL: unexpected :preview in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
 	\
-	echo "--- Test 12: docker-tags for preview release ---" && \
+	echo "--- Test 12: release-flags --prerelease for preview ---" && \
 	git commit --allow-empty -q -m "feature C" && \
+	RESULT=$$(eval $$MK release-flags) && \
+	[ "$$RESULT" = "--prerelease" ] || { echo "FAIL: expected --prerelease, got $$RESULT" >&2; exit 1; } && \
+	echo "  release-flags = $$RESULT  OK" && \
+	\
+	echo "--- Test 13: release-flags --draft overrides --prerelease ---" && \
+	RESULT=$$(eval $$MK release-flags DRAFT_RELEASE=true) && \
+	[ "$$RESULT" = "--draft" ] || { echo "FAIL: expected --draft, got $$RESULT" >&2; exit 1; } && \
+	echo "  release-flags = $$RESULT  OK" && \
+	\
+	echo "--- Test 14: docker-tags :preview for preview release ---" && \
 	RESULT=$$(eval $$MK docker-tags) && \
 	echo "$$RESULT" | grep -q ":preview" || { echo "FAIL: expected :preview in $$RESULT" >&2; exit 1; } && \
 	echo "$$RESULT" | grep -qv ":latest" || { echo "FAIL: unexpected :latest in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
 	\
-	echo "--- Test 13: docker-tags uses draft image prefix ---" && \
+	echo "--- Test 15: docker-tags uses draft image prefix ---" && \
 	RESULT=$$(eval $$MK docker-tags DRAFT_RELEASE=true) && \
 	echo "$$RESULT" | grep -q "not-for-release-server" || { echo "FAIL: expected not-for-release-server in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
