@@ -70,6 +70,27 @@ current-version:
 release-tag:
 	@echo "$(GOODMEM_VERSION)"
 
+# Previous stable server tag to use as the release-note baseline for official
+# stable releases. Preview and non-server tags are intentionally excluded.
+.PHONY: previous-stable-release-tag
+previous-stable-release-tag:
+	@if [[ "$(GOODMEM_VERSION)" =~ ^server-v[0-9]+\.[0-9]+\.[0-9]+$$ ]]; then \
+		git tag -l 'server-v*' \
+			| grep -E '^server-v[0-9]+\.[0-9]+\.[0-9]+$$' \
+			| grep -Fxv "$(GOODMEM_VERSION)" \
+			| sort -V \
+			| tail -n1; \
+	fi
+
+# Release note args for gh release create. Only official stable server releases
+# anchor generated notes to the prior stable server release.
+.PHONY: release-note-args
+release-note-args:
+	@PREVIOUS_TAG=$$($(SELF) --no-print-directory previous-stable-release-tag); \
+	if [[ -n "$$PREVIOUS_TAG" ]]; then \
+		echo "--notes-start-tag=$$PREVIOUS_TAG"; \
+	fi
+
 # gh release flags (--draft when DRAFT_RELEASE=true, empty otherwise)
 .PHONY: release-flags
 release-flags:
@@ -153,8 +174,9 @@ promote-docker-image:
 .PHONY: create-github-release
 create-github-release:
 	@FLAGS=$$($(SELF) --no-print-directory release-flags) && \
+	RELEASE_NOTE_ARGS=$$($(SELF) --no-print-directory release-note-args) && \
 	echo "Creating release $(GOODMEM_VERSION)..." && \
-	gh -R "$$GITHUB_REPOSITORY" release create "$(GOODMEM_VERSION)" $$FLAGS --generate-notes
+	gh -R "$$GITHUB_REPOSITORY" release create "$(GOODMEM_VERSION)" $$FLAGS $$RELEASE_NOTE_ARGS --generate-notes
 
 # Env: GITHUB_REPOSITORY, ATTESTATIONS_DIR
 # Uses: GOODMEM_VERSION
@@ -216,6 +238,7 @@ test:
 	echo "--- Test 1: Stable release (version.txt changed in HEAD) ---" && \
 	echo "1.2.3" > version.txt && \
 	git add version.txt && git commit -q -m "set version 1.2.3" && \
+	git tag server-v1.2.3 && \
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "1.2.3" ] || { echo "FAIL: expected 1.2.3, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
@@ -257,37 +280,39 @@ test:
 	echo "--- Test 8: New stable release ---" && \
 	echo "2.0.0" > version.txt && \
 	git add version.txt && git commit -q -m "bump to 2.0.0" && \
+	git tag java-client-v9.9.9 && \
+	git tag foo-bar && \
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "2.0.0" ] || { echo "FAIL: expected 2.0.0, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
-	echo "--- Test 9: Edge resets to 1 after version bump ---" && \
+	echo "--- Test 9: previous-stable-release-tag ignores edge and non-server tags ---" && \
+	RESULT=$$(eval $$MK previous-stable-release-tag) && \
+	[ "$$RESULT" = "server-v1.2.3" ] || { echo "FAIL: expected server-v1.2.3, got $$RESULT" >&2; exit 1; } && \
+	echo "  previous-stable-release-tag = $$RESULT  OK" && \
+	\
+	echo "--- Test 10: release-note-args anchors stable notes to prior stable release ---" && \
+	RESULT=$$(eval $$MK release-note-args) && \
+	[ "$$RESULT" = "--notes-start-tag=server-v1.2.3" ] || { echo "FAIL: expected --notes-start-tag=server-v1.2.3, got $$RESULT" >&2; exit 1; } && \
+	echo "  release-note-args = $$RESULT  OK" && \
+	\
+	echo "--- Test 11: Edge resets to 1 after version bump ---" && \
 	git commit --allow-empty -q -m "feature D" && \
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "2.0.0_edge_1" ] || { echo "FAIL: expected 2.0.0_edge_1, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
-	echo "--- Test 10: image-prefix for normal release ---" && \
+	echo "--- Test 12: image-prefix for normal release ---" && \
 	RESULT=$$(eval $$MK image-prefix) && \
 	[ "$$RESULT" = "ghcr.io/pair-systems-inc/goodmem/server" ] || { echo "FAIL: expected normal prefix, got $$RESULT" >&2; exit 1; } && \
 	echo "  image-prefix = $$RESULT  OK" && \
 	\
-	echo "--- Test 11: image-prefix for draft release ---" && \
+	echo "--- Test 13: image-prefix for draft release ---" && \
 	RESULT=$$(eval $$MK image-prefix DRAFT_RELEASE=true) && \
 	[ "$$RESULT" = "ghcr.io/pair-systems-inc/goodmem/not-for-release-server" ] || { echo "FAIL: expected draft prefix, got $$RESULT" >&2; exit 1; } && \
 	echo "  image-prefix = $$RESULT  OK" && \
 	\
-	echo "--- Test 12: release-flags --prerelease for edge ---" && \
-	RESULT=$$(eval $$MK release-flags) && \
-	[ "$$RESULT" = "--prerelease" ] || { echo "FAIL: expected --prerelease, got $$RESULT" >&2; exit 1; } && \
-	echo "  release-flags = $$RESULT  OK" && \
-	\
-	echo "--- Test 13: release-flags --draft overrides --prerelease ---" && \
-	RESULT=$$(eval $$MK release-flags DRAFT_RELEASE=true) && \
-	[ "$$RESULT" = "--draft" ] || { echo "FAIL: expected --draft, got $$RESULT" >&2; exit 1; } && \
-	echo "  release-flags = $$RESULT  OK" && \
-	\
-	echo "--- Test 14: release-flags empty for stable ---" && \
+	echo "--- Test 14: release-flags empty for stable release ---" && \
 	eval $$MK bump-tag && \
 	echo "2.1.0" > version.txt && \
 	git add version.txt && git commit -q -m "bump to 2.1.0" && \
@@ -306,14 +331,29 @@ test:
 	echo "$$RESULT" | grep -qv ":edge" || { echo "FAIL: unexpected :edge in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
 	\
-	echo "--- Test 17: docker-tags :edge for edge release ---" && \
+	echo "--- Test 17: release-flags --prerelease for edge ---" && \
 	git commit --allow-empty -q -m "feature E" && \
+	RESULT=$$(eval $$MK release-flags) && \
+	[ "$$RESULT" = "--prerelease" ] || { echo "FAIL: expected --prerelease, got $$RESULT" >&2; exit 1; } && \
+	echo "  release-flags = $$RESULT  OK" && \
+	\
+	echo "--- Test 18: release-note-args empty for edge releases ---" && \
+	RESULT=$$(eval $$MK release-note-args) && \
+	[ -z "$$RESULT" ] || { echo "FAIL: expected empty release-note-args, got $$RESULT" >&2; exit 1; } && \
+	echo "  release-note-args = (empty)  OK" && \
+	\
+	echo "--- Test 19: release-flags --draft overrides --prerelease ---" && \
+	RESULT=$$(eval $$MK release-flags DRAFT_RELEASE=true) && \
+	[ "$$RESULT" = "--draft" ] || { echo "FAIL: expected --draft, got $$RESULT" >&2; exit 1; } && \
+	echo "  release-flags = $$RESULT  OK" && \
+	\
+	echo "--- Test 20: docker-tags :edge for edge release ---" && \
 	RESULT=$$(eval $$MK docker-tags) && \
 	echo "$$RESULT" | grep -q ":edge" || { echo "FAIL: expected :edge in $$RESULT" >&2; exit 1; } && \
 	echo "$$RESULT" | grep -qv ":latest" || { echo "FAIL: unexpected :latest in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
 	\
-	echo "--- Test 18: docker-tags uses draft image prefix ---" && \
+	echo "--- Test 21: docker-tags uses draft image prefix ---" && \
 	RESULT=$$(eval $$MK docker-tags DRAFT_RELEASE=true) && \
 	echo "$$RESULT" | grep -q "not-for-release-server" || { echo "FAIL: expected not-for-release-server in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
