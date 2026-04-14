@@ -172,7 +172,7 @@ upload-artifacts:
 		gh -R "$$GITHUB_REPOSITORY" release upload "$(GOODMEM_VERSION)" "$$file"; \
 	done
 
-# Env: GITHUB_REPOSITORY, ARTIFACTS_DIR
+# Env: GITHUB_REPOSITORY, ATTESTATIONS_DIR, ARTIFACTS_DIR
 # Uses: release-flags, GOODMEM_VERSION
 .PHONY: update-rolling-edge
 update-rolling-edge:
@@ -183,6 +183,9 @@ update-rolling-edge:
 		$$FLAGS \
 		--title "Latest Edge ($(GOODMEM_VERSION))" \
 		--notes "Rolling edge release. Points to $(GOODMEM_VERSION)." && \
+	find "$$ATTESTATIONS_DIR" -type f | while IFS= read -r file; do \
+		gh -R "$$GITHUB_REPOSITORY" release upload server-edge "$$file"; \
+	done && \
 	find "$$ARTIFACTS_DIR" -type f | while IFS= read -r file; do \
 		gh -R "$$GITHUB_REPOSITORY" release upload server-edge "$$file"; \
 	done
