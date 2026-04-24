@@ -37,7 +37,7 @@ jobs:
   slsa-setup:
     permissions:
       id-token: write
-    runs-on: ubuntu-latest
+    runs-on: arc-release
     outputs:
       slsa-token: ${{ steps.generate.outputs.slsa-token }}
     steps:
@@ -47,7 +47,7 @@ jobs:
         with:
           slsa-workflow-recipient: "delegator_generic_slsa3.yml"
           slsa-rekor-log-public: true
-          slsa-runner-label: "ubuntu-latest"
+          slsa-runner-label: "arc-release"
           slsa-build-action-path: ".github/actions/slsa-release"
           slsa-workflow-inputs: ${{ toJson(inputs) }}
           slsa-workflow-masked-inputs: ""
@@ -67,7 +67,7 @@ jobs:
       secret2: ${{ secrets.FOSSA_API_KEY }}
 
   docker-build:
-    runs-on: ubuntu-latest
+    runs-on: arc-release
     permissions:
       contents: read
       packages: write
@@ -173,7 +173,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    runs-on: ubuntu-latest
+    runs-on: arc-release
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
