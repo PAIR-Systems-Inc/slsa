@@ -67,7 +67,7 @@ jobs:
       secret2: ${{ secrets.FOSSA_API_KEY }}
 
   docker-build:
-    runs-on: ubuntu-latest
+    runs-on: arc-release
     permissions:
       contents: read
       packages: write
@@ -91,6 +91,9 @@ jobs:
 
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
+
+      - name: Setup make
+        uses: ./.github/actions/setup-make
 
       - name: Bump version tag
         run: make -f Makefile.slsa bump-tag
@@ -173,7 +176,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    runs-on: ubuntu-latest
+    runs-on: arc-release
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -192,6 +195,9 @@ jobs:
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
 
+      - name: Setup make
+        uses: ./.github/actions/setup-make
+
       - name: Bump version tag
         run: make -f Makefile.slsa bump-tag
 
@@ -201,6 +207,14 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
+
+      # SLSA's secure-download-folder calls .github/actions/rng internally,
+      # which shells out to `xxd`. Stock ghcr.io/actions/actions-runner doesn't
+      # ship vim-common, so install it before any SLSA composite action runs.
+      - name: Install xxd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xxd
 
       - name: Secure download provenance
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
