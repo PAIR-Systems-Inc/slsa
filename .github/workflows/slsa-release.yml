@@ -93,6 +93,9 @@ jobs:
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
 
+      - name: Setup make
+        uses: ./.github/actions/setup-make
+
       - name: Bump version tag
         run: make -f Makefile.slsa bump-tag
 
@@ -193,6 +196,9 @@ jobs:
 
       - name: Install Makefile.slsa
         run: cp __slsa__/Makefile.slsa .
+
+      - name: Setup make
+        uses: ./.github/actions/setup-make
 
       - name: Bump version tag
         run: make -f Makefile.slsa bump-tag
