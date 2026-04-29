@@ -37,7 +37,7 @@ jobs:
   slsa-setup:
     permissions:
       id-token: write
-    runs-on: arc-release
+    runs-on: ubuntu-latest
     outputs:
       slsa-token: ${{ steps.generate.outputs.slsa-token }}
     steps:
@@ -47,7 +47,7 @@ jobs:
         with:
           slsa-workflow-recipient: "delegator_generic_slsa3.yml"
           slsa-rekor-log-public: true
-          slsa-runner-label: "arc-release"
+          slsa-runner-label: "ubuntu-latest"
           slsa-build-action-path: ".github/actions/slsa-release"
           slsa-workflow-inputs: ${{ toJson(inputs) }}
           slsa-workflow-masked-inputs: ""
