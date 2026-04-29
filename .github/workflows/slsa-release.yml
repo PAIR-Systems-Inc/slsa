@@ -210,6 +210,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
 
+      # SLSA's secure-download-folder calls .github/actions/rng internally,
+      # which shells out to `xxd`. Stock ghcr.io/actions/actions-runner doesn't
+      # ship vim-common, so install it before any SLSA composite action runs.
+      - name: Install xxd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xxd
+
       - name: Secure download provenance
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
         with:
