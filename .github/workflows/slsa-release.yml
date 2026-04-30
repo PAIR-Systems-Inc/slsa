@@ -67,7 +67,7 @@ jobs:
       secret2: ${{ secrets.FOSSA_API_KEY }}
 
   docker-build:
-    runs-on: arc-release
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -191,7 +191,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    runs-on: arc-release
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
