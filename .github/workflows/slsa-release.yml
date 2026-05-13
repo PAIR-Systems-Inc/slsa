@@ -82,6 +82,7 @@ jobs:
           ref: ${{ inputs.ref }}
           token: ${{ secrets.REPO_TOKEN }}
           fetch-depth: 0
+          lfs: true
 
       - name: Checkout SLSA build tools
         uses: actions/checkout@v4
@@ -200,6 +201,7 @@ jobs:
           ref: ${{ inputs.ref }}
           token: ${{ secrets.REPO_TOKEN }}
           fetch-depth: 0
+          lfs: true
 
       - name: Checkout SLSA build tools
         uses: actions/checkout@v4
