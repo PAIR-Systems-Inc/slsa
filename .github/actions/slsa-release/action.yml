@@ -59,6 +59,7 @@ runs:
         ref: ${{ steps.parse.outputs.ref }}
         token: ${{ inputs.slsa-workflow-secret1 }}
         fetch-depth: 0
+        lfs: true
 
     - name: Setup Java for Server
       uses: ./.github/actions/setup-java
