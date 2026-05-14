@@ -75,6 +75,14 @@ jobs:
       digest: ${{ steps.build-server.outputs.digest }}
       image: ${{ steps.image.outputs.name }}
     steps:
+      # arc-release base image lacks git-lfs; install before any
+      # actions/checkout step uses lfs: true.
+      - name: Install git-lfs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends git-lfs
+          git lfs install --skip-repo
+
       - name: Checkout goodmem
         uses: actions/checkout@v4
         with:
@@ -194,6 +202,14 @@ jobs:
       packages: write
     runs-on: arc-release
     steps:
+      # arc-release base image lacks git-lfs; install before any
+      # actions/checkout step uses lfs: true.
+      - name: Install git-lfs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends git-lfs
+          git lfs install --skip-repo
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
