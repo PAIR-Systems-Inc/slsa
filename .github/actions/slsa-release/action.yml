@@ -65,17 +65,7 @@ runs:
       uses: ./.github/actions/setup-java
 
     - name: Setup Node and pnpm
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Enable pnpm
-      shell: bash
-      run: |
-        corepack enable
-        corepack prepare pnpm@9 --activate
-        node --version
-        pnpm --version
+      uses: ./.github/actions/setup-node-pnpm
 
     - name: Setup Go
       uses: ./.github/actions/setup-go-cli
