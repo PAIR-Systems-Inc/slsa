@@ -5,19 +5,27 @@ SELF := $(MAKE) -f Makefile.slsa
 # Version computation
 #
 # version.txt is the single source of truth for the base version (e.g. 1.2.3).
-# If version.txt was changed in HEAD this is a stable release; otherwise it is
+# If this release changes version.txt it is a stable release; otherwise it is
 # an edge release whose number increments from the last tag.
 # ---------------------------------------------------------------------------
 BASE_VERSION := $(shell cat version.txt 2>/dev/null | tr -d '[:space:]')
 
-# true when HEAD has commits after the last version.txt change
+# Stable when this release changes version.txt, edge otherwise.
+#
+# We compare version.txt at HEAD against version.txt at HEAD's first parent
+# rather than checking which commit's SHA last touched the file. On a merge
+# commit (GitHub's default PR merge), the version bump lives in a merged-in
+# parent, so the last-touching commit is never HEAD itself — the old SHA
+# equality check misclassified every version-bumping PR merge as edge. A
+# first-parent content diff is correct for merge commits, squash merges, and
+# linear history alike.
 IS_EDGE_RELEASE := $(shell \
-  version_commit=$$(git log -1 --format=%H -- version.txt 2>/dev/null); \
-  head_commit=$$(git rev-parse HEAD 2>/dev/null); \
-  if [ -n "$$version_commit" ] && [ "$$version_commit" != "$$head_commit" ]; then \
-    echo "true"; \
-  else \
+  head_version=$$(git show HEAD:version.txt 2>/dev/null | tr -d '[:space:]'); \
+  parent_version=$$(git show HEAD^1:version.txt 2>/dev/null | tr -d '[:space:]'); \
+  if [ -n "$$head_version" ] && [ "$$head_version" != "$$parent_version" ]; then \
     echo "false"; \
+  else \
+    echo "true"; \
   fi)
 
 # ---------------------------------------------------------------------------
@@ -357,5 +365,26 @@ test:
 	RESULT=$$(eval $$MK docker-tags DRAFT_RELEASE=true) && \
 	echo "$$RESULT" | grep -q "not-for-release-server" || { echo "FAIL: expected not-for-release-server in $$RESULT" >&2; exit 1; } && \
 	echo "  docker-tags = $$RESULT  OK" && \
+	\
+	echo "--- Test 22: merge commit bumping version.txt is a stable release ---" && \
+	git checkout -q -b feature-branch && \
+	echo "3.0.0" > version.txt && \
+	git add version.txt && git commit -q -m "bump to 3.0.0" && \
+	git checkout -q - && \
+	git merge -q --no-ff -m "Merge pull request: bump to 3.0.0" feature-branch && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "3.0.0" ] || { echo "FAIL: expected 3.0.0 (stable) for version-bumping merge, got $$RESULT" >&2; exit 1; } && \
+	RESULT=$$(eval $$MK release-flags) && \
+	[ -z "$$RESULT" ] || { echo "FAIL: expected empty release-flags (stable) for merge, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = 3.0.0  OK" && \
+	\
+	echo "--- Test 23: merge commit not touching version.txt is an edge release ---" && \
+	git checkout -q -b feature-branch-2 && \
+	git commit --allow-empty -q -m "feature without version bump" && \
+	git checkout -q - && \
+	git merge -q --no-ff -m "Merge pull request: no version bump" feature-branch-2 && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "3.0.0_edge_1" ] || { echo "FAIL: expected 3.0.0_edge_1 (edge) for non-bumping merge, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = 3.0.0_edge_1  OK" && \
 	\
 	echo "" && echo "All tests passed."
