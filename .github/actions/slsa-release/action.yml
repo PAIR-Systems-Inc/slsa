@@ -70,12 +70,30 @@ runs:
     - name: Setup Go
       uses: ./.github/actions/setup-go-cli
 
+    - name: Compute canonical version
+      shell: bash
+      run: |
+        cp "./../__TOOL_ACTION_DIR__/../../../Makefile.slsa" ./Makefile.slsa
+        # Create the canonical tag on HEAD so the server JAR's BUILD_GIT_DESCRIBE
+        # resolves, matching the image build (which also runs bump-tag).
+        make -f Makefile.slsa bump-tag
+        VERSION_TAG=$(make -f Makefile.slsa release-tag)
+        echo "Canonical version: $VERSION_TAG"
+        # CLI_VERSION strips the "server-" prefix to match cli/Makefile's format
+        # (keeps the leading "v", e.g. v1.0.276 or v1.0.276_edge_3).
+        {
+          echo "GOODMEM_VERSION=$VERSION_TAG"
+          echo "CLI_VERSION=${VERSION_TAG#server-}"
+        } >> "$GITHUB_ENV"
+
     - name: Build artifacts
       shell: bash
       env:
         FOSSA_API_KEY: ${{ inputs.slsa-workflow-secret2 }}
       run: |
-        make release-artifacts DRY_RUN=false
+        make release-artifacts DRY_RUN=false \
+          GOODMEM_VERSION="$GOODMEM_VERSION" \
+          CLI_VERSION="$CLI_VERSION"
 
     - name: Generate layout file
       id: layout
