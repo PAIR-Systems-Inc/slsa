@@ -73,7 +73,7 @@ runs:
     - name: Compute canonical version
       shell: bash
       run: |
-        cp "./../__TOOL_ACTION_DIR__/../../../Makefile.slsa" ./Makefile.slsa
+        cp "./../__TOOL_CHECKOUT_DIR__/Makefile.slsa" ./Makefile.slsa
         # Create the canonical tag on HEAD so the server JAR's BUILD_GIT_DESCRIBE
         # resolves, matching the image build (which also runs bump-tag).
         make -f Makefile.slsa bump-tag
