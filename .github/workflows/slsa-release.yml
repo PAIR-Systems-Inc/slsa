@@ -178,6 +178,175 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true
 
+  container-image-scan:
+    name: Scan server image (${{ matrix.platform }})
+    needs: [docker-build]
+    runs-on: arc-release
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            slug: linux-amd64
+          - platform: linux/arm64
+            slug: linux-arm64
+    env:
+      IMAGE: ${{ needs.docker-build.outputs.image }}
+      INDEX_DIGEST: ${{ needs.docker-build.outputs.digest }}
+      TARGET_PLATFORM: ${{ matrix.platform }}
+      GRYPE_VERSION: '0.116.0'
+      GRYPE_LINUX_AMD64_SHA256: '40aff724297312f91ea390d003bed8d8651c74cc7f5b26732db80b3a408d2fc5'
+      GRYPE_SARIF: grype-release-server-${{ matrix.slug }}.sarif
+      OSV_SCANNER_VERSION: '2.4.0'
+      OSV_SCANNER_LINUX_AMD64_SHA256: '15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0'
+      OSV_SARIF: osv-release-server-${{ matrix.slug }}.sarif
+    steps:
+      - name: Checkout goodmem
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: ${{ inputs.repo }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GitHub Container Registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REPO_TOKEN }}
+        run: |
+          printf '%s' "${REGISTRY_TOKEN}" \
+            | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Resolve and pull exact platform digest
+        id: target
+        run: |
+          set -euo pipefail
+          manifest_json="${RUNNER_TEMP}/server-index.json"
+          docker buildx imagetools inspect "${IMAGE}@${INDEX_DIGEST}" --raw > "${manifest_json}"
+
+          mapfile -t digests < <(
+            jq -r --arg platform "${TARGET_PLATFORM}" '
+              .manifests[]?
+              | select(.platform.os != null and .platform.architecture != null)
+              | select([.platform.os, .platform.architecture] | join("/") == $platform)
+              | .digest
+            ' "${manifest_json}"
+          )
+          if [[ ${#digests[@]} -ne 1 || ! "${digests[0]}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Expected one valid digest for ${TARGET_PLATFORM}; found ${#digests[@]}"
+            exit 1
+          fi
+
+          exact_image="${IMAGE}@${digests[0]}"
+          echo "Exact scan target: ${exact_image}"
+          docker pull --platform "${TARGET_PLATFORM}" "${exact_image}"
+          printf 'EXACT_IMAGE=%s\n' "${exact_image}" >> "${GITHUB_ENV}"
+
+      - name: Install Grype CLI
+        id: install-grype
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/grype-${GRYPE_VERSION}"
+          archive="${install_dir}/grype.tar.gz"
+          mkdir -p "${install_dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz" \
+            --output "${archive}"
+          printf '%s  %s\n' "${GRYPE_LINUX_AMD64_SHA256}" "${archive}" \
+            | sha256sum --check --strict
+          tar -xzf "${archive}" -C "${install_dir}" grype
+          printf '%s\n' "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Scan all image vulnerabilities with Grype
+        id: grype-report
+        run: |
+          grype "${EXACT_IMAGE}" \
+            --only-fixed=false \
+            --add-cpes-if-none \
+            --output sarif \
+            --file "${GRYPE_SARIF}"
+
+      - name: Gate on fixed HIGH or CRITICAL vulnerabilities
+        if: ${{ !cancelled() && steps.install-grype.outcome == 'success' }}
+        run: |
+          grype "${EXACT_IMAGE}" \
+            --only-fixed \
+            --add-cpes-if-none \
+            --fail-on high \
+            --output table
+
+      - name: Upload Grype SARIF artifact
+        if: ${{ !cancelled() && steps.grype-report.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: grype-release-server-${{ matrix.slug }}
+          path: ${{ env.GRYPE_SARIF }}
+          if-no-files-found: error
+
+      - name: Upload Grype SARIF to Security
+        if: ${{ !cancelled() && steps.grype-report.outcome == 'success' }}
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        with:
+          sarif_file: ${{ env.GRYPE_SARIF }}
+          category: grype-release-server-${{ matrix.slug }}
+
+      - name: Install OSV-Scanner
+        id: install-osv
+        if: ${{ !cancelled() && steps.target.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/osv-scanner-v${OSV_SCANNER_VERSION}"
+          mkdir -p "${install_dir}"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" \
+            --output "${install_dir}/osv-scanner"
+          printf '%s  %s\n' "${OSV_SCANNER_LINUX_AMD64_SHA256}" "${install_dir}/osv-scanner" \
+            | sha256sum --check --strict
+          chmod 0755 "${install_dir}/osv-scanner"
+          printf '%s\n' "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Scan image with OSV-Scanner
+        id: osv-report
+        if: ${{ !cancelled() && steps.install-osv.outcome == 'success' }}
+        run: |
+          set +e
+          osv-scanner scan image \
+            --format sarif \
+            --output-file "${OSV_SARIF}" \
+            "${EXACT_IMAGE}"
+          scan_status=$?
+          set -e
+
+          if [[ ${scan_status} -eq 0 || ${scan_status} -eq 1 ]]; then
+            exit 0
+          fi
+
+          echo "::error::OSV-Scanner failed operationally with exit code ${scan_status}"
+          exit "${scan_status}"
+
+      - name: Upload OSV-Scanner SARIF artifact
+        if: ${{ !cancelled() && steps.osv-report.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: osv-release-server-${{ matrix.slug }}
+          path: ${{ env.OSV_SARIF }}
+          if-no-files-found: error
+
+      - name: Upload OSV-Scanner SARIF to Security
+        if: ${{ !cancelled() && steps.osv-report.outcome == 'success' }}
+        uses: github/codeql-action/upload-sarif@c10b8064de6f491fea524254123dbe5e09572f13 # v4
+        with:
+          sarif_file: ${{ env.OSV_SARIF }}
+          category: osv-release-server-${{ matrix.slug }}
+
   container-provenance-server:
     needs: [docker-build]
     permissions:
@@ -196,7 +365,7 @@ jobs:
       provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
   publish:
-    needs: [slsa-run, docker-build, container-provenance-server]
+    needs: [slsa-run, docker-build, container-image-scan, container-provenance-server]
     permissions:
       contents: write
       packages: write
