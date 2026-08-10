@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      verify-only:
+        description: "Verify-only mode: build + attest to not-for-release image names, run verify-release against the freshly-signed artifacts, then STOP — publish is skipped, so NO tags move and NO GitHub release (draft or otherwise) is created. For the pre-release signing-verification PR check."
+        required: false
+        type: boolean
+        default: false
     secrets:
       REPO_TOKEN:
         description: "GitHub token with access to clone private repo"
@@ -159,7 +164,10 @@ jobs:
       - name: Select image name
         id: image
         run: |
-          if [ "${{ inputs.draft-release }}" = "true" ]; then
+          # Both draft-release and verify-only build to the throwaway
+          # not-for-release name so the real `server` repo/tags are never touched
+          # unless this is a real release that will actually publish.
+          if [ "${{ inputs.draft-release }}" = "true" ] || [ "${{ inputs.verify-only }}" = "true" ]; then
             echo "name=ghcr.io/pair-systems-inc/goodmem/not-for-release-server" >> "$GITHUB_OUTPUT"
           else
             echo "name=ghcr.io/pair-systems-inc/goodmem/server" >> "$GITHUB_OUTPUT"
@@ -195,8 +203,145 @@ jobs:
       registry-password: ${{ secrets.REPO_TOKEN }}
       provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
-  publish:
+  # verify-release runs the REAL customer install + upgrade + CLI-binary verify
+  # against the exact image/binary this run just built and signed, BEFORE anything
+  # is made public. `publish` depends on it, so an artifact that would not verify
+  # for a customer can never get a :latest/:vX tag or a GitHub release
+  # (verify-then-publish). Signing (this pipeline) and verification (the installer)
+  # can only break if one of them changes, so this exercises the real machinery on
+  # the real bytes — no stand-in image, no post-release smoke.
+  #
+  # Runs in the CALLER's context (goodmem, PRIVATE) because this is a reusable
+  # workflow, so its logs (image digests, install output) stay private even though
+  # this file lives in the public slsa repo — this workflow is workflow_call only
+  # and never runs ON the slsa repo.
+  #
+  # SPIKE (must be confirmed by a real verify-only dispatch before cutting a
+  # version): arc-release must have (a) a rootful dockerd that can `docker compose
+  # up` the server + postgres and bind localhost:8080, and (b) sigstore egress
+  # (fulcio/rekor/tuf) for `cosign verify-attestation`. The existing docker-build
+  # job proves docker + ghcr work here; compose + sigstore egress are unproven
+  # (INSTALLER-E2E only ever installed with --skip-verify). If egress is blocked,
+  # this needs an in-cluster TUF mirror; if compose is unavailable, a different
+  # runner. The `system install` step below is itself that egress/compose probe —
+  # it fails loudly at the verify step if either is missing.
+  verify-release:
     needs: [slsa-run, docker-build, container-provenance-server]
+    permissions:
+      contents: read
+      packages: read
+    runs-on: arc-release
+    steps:
+      - name: Install git-lfs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends git-lfs
+          git lfs install --skip-repo
+
+      - name: Checkout goodmem
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.REPO_TOKEN }}
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup make
+        uses: ./.github/actions/setup-make
+
+      # arc images ship docker but not the compose plugin; the install's
+      # `docker compose up` exits 125 without this.
+      - name: Ensure docker compose
+        uses: ./.github/actions/ensure-compose
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.REPO_TOKEN }}
+
+      # secure-download-folder shells out to xxd via .github/actions/rng; the stock
+      # runner image lacks vim-common.
+      - name: Install xxd
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xxd
+
+      # The freshly-built release CLI (the exact binary being shipped) + its SLSA
+      # provenance bundles, straight from this run's slsa-run outputs.
+      - name: Download release CLI artifacts
+        uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
+        with:
+          name: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-name }}
+          path: dist
+          sha256: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-sha256 }}
+
+      - name: Download provenance bundles (.build.slsa)
+        uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
+        with:
+          name: ${{ needs.slsa-run.outputs.attestations-download-name }}
+          path: provenance
+          sha256: ${{ needs.slsa-run.outputs.attestations-download-sha256 }}
+
+      - name: Install the freshly-built CLI
+        run: |
+          set -euo pipefail
+          tar -xzf dist/goodmem-linux-amd64.tar.gz -C /tmp
+          sudo install -m0755 /tmp/goodmem-linux-amd64 /usr/local/bin/goodmem
+          goodmem version || true
+
+      # (1) INSTALL — verify ON — the prior published :latest (a signed release):
+      # exercises the real pull -> cosign verify-attestation -> digest-match path
+      # AND is the arc-release sigstore/compose probe. This is the customer's
+      # current state before they upgrade to the release under test.
+      - name: system install (prior :latest, verify ON)
+        run: |
+          set -euo pipefail
+          DBPASS="verify-$(openssl rand -hex 8)"
+          goodmem system install \
+            --handsfree --checkmark-logger --skip-docker-install \
+            --tls-disabled --db-password "$DBPASS" \
+            --goodmem-image ghcr.io/pair-systems-inc/goodmem/server:latest \
+            --profile-name relverify
+          for _ in $(seq 1 60); do
+            curl -fsS http://localhost:8080/readyz >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/readyz
+
+      # (2) SYSTEM UPGRADE — verify ON — to THIS run's freshly-built image by
+      # digest. This is the gate: the image we are about to publish must verify +
+      # come up healthy for a customer upgrading to it. --skip-cli-check avoids the
+      # get.goodmem.ai CLI-version precheck (this CLI is not yet published).
+      - name: system upgrade to this release's image (verify ON)
+        env:
+          IMAGE: ${{ needs.docker-build.outputs.image }}@${{ needs.docker-build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          goodmem system upgrade --profile-name relverify --image "$IMAGE" --skip-cli-check
+          for _ in $(seq 1 60); do
+            curl -fsS http://localhost:8080/readyz >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/readyz
+
+      # (3) CLI BINARY VERIFY — the real `goodmem upgrade --local-cli-tarball
+      # --local-bundle` against the freshly-built tarball + its .build.slsa bundle
+      # (verify-then-install). A throwaway copy is upgraded so the swap is harmless;
+      # a green exit means the binary's SLSA provenance verified.
+      - name: verify release CLI binary provenance
+        run: |
+          set -euo pipefail
+          cp "$(command -v goodmem)" /tmp/gm-verify
+          /tmp/gm-verify upgrade --yes \
+            --local-cli-tarball dist/goodmem-linux-amd64.tar.gz \
+            --local-bundle provenance/goodmem-linux-amd64.tar.gz.build.slsa
+
+  publish:
+    needs: [slsa-run, docker-build, container-provenance-server, verify-release]
+    if: ${{ !inputs.verify-only }}
     permissions:
       contents: write
       packages: write
