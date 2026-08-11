@@ -51,15 +51,6 @@ runs:
         INPUTS='${{ inputs.slsa-workflow-inputs }}'
         echo "repo=$(echo "$INPUTS" | jq -r '.repo')" >> "$GITHUB_OUTPUT"
         echo "ref=$(echo "$INPUTS" | jq -r '.ref')" >> "$GITHUB_OUTPUT"
-        # release-command is optional; jq prints the string default from the
-        # reusable workflow when present, or "null" if an older caller omits it.
-        RELEASE_COMMAND=$(echo "$INPUTS" | jq -r '."release-command" // "make release-artifacts DRY_RUN=false GOODMEM_VERSION=\"$GOODMEM_VERSION\" CLI_VERSION=\"$CLI_VERSION\""')
-        # Preserve the multi-line-safe value across the step boundary.
-        {
-          echo "release-command<<__RELEASE_COMMAND__"
-          echo "$RELEASE_COMMAND"
-          echo "__RELEASE_COMMAND__"
-        } >> "$GITHUB_OUTPUT"
 
     - name: Checkout code
       uses: actions/checkout@v4
@@ -79,30 +70,10 @@ runs:
     - name: Setup Go
       uses: ./.github/actions/setup-go-cli
 
-    # Install a pinned just so a `just`-based release-command works on this
-    # GitHub-hosted runner. Harmless for the make default. Keep the version and
-    # checksums in sync with goodmem's .github/actions/setup-just/action.yml.
+    # goodmem's pinned-just composite (checked out above), same as the setup-*
+    # steps here — keeps the just version/checksums defined in one place.
     - name: Setup just
-      shell: bash
-      run: |
-        JUST_VERSION=1.57.0
-        if command -v just >/dev/null 2>&1 && [ "$(just --version 2>/dev/null)" = "just $JUST_VERSION" ]; then
-          echo "just $JUST_VERSION already present"
-        else
-          case "$(uname -m)" in
-            x86_64) target="x86_64-unknown-linux-musl"; sha256="45b548094283cb9739af8f13273b8cddeee869f5b4ef2bb631b1f311cb566155" ;;
-            aarch64) target="aarch64-unknown-linux-musl"; sha256="f225044a81adea6e0b3a8b9370aaf374e6af76c8735ae263ac993df55fd137ec" ;;
-            *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          tmpdir=$(mktemp -d)
-          curl -fsSL --retry 3 -o "$tmpdir/just.tar.gz" "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-${target}.tar.gz"
-          echo "${sha256}  ${tmpdir}/just.tar.gz" | sha256sum -c -
-          tar -xzf "$tmpdir/just.tar.gz" -C "$tmpdir" just
-          mkdir -p "$HOME/.local/bin"
-          install -m 0755 "$tmpdir/just" "$HOME/.local/bin/just"
-          rm -rf "$tmpdir"
-        fi
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      uses: ./.github/actions/setup-just
 
     - name: Compute canonical version
       shell: bash
@@ -124,13 +95,12 @@ runs:
       shell: bash
       env:
         FOSSA_API_KEY: ${{ inputs.slsa-workflow-secret2 }}
-        RELEASE_COMMAND: ${{ steps.parse.outputs.release-command }}
       run: |
-        # GOODMEM_VERSION and CLI_VERSION are in the environment (set above), so
-        # the command can reference them whether it's make (as args) or just (as
-        # env the recipes read via env(...)).
-        echo "Running release command: $RELEASE_COMMAND"
-        eval "$RELEASE_COMMAND"
+        # GOODMEM_VERSION and CLI_VERSION are exported to the environment above;
+        # the cli/server release recipes read them via env(...). Always a real
+        # build (dry_run=false); draft-release mode is handled separately by the
+        # image-naming and gh-release steps, not here.
+        just release-artifacts false
 
     - name: Generate layout file
       id: layout

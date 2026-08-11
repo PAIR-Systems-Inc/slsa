@@ -18,11 +18,6 @@ on:
         required: false
         type: boolean
         default: false
-      release-command:
-        description: "Command the build action runs to produce the SLSA artifacts in dist/. Runs with GOODMEM_VERSION and CLI_VERSION in the environment. Defaults to the make target; pass a `just` recipe once the caller has migrated off make."
-        required: false
-        type: string
-        default: 'make release-artifacts DRY_RUN=false GOODMEM_VERSION="$GOODMEM_VERSION" CLI_VERSION="$CLI_VERSION"'
     secrets:
       REPO_TOKEN:
         description: "GitHub token with access to clone private repo"
