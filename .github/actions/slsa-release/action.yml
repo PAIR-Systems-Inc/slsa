@@ -70,6 +70,11 @@ runs:
     - name: Setup Go
       uses: ./.github/actions/setup-go-cli
 
+    # goodmem's pinned-just composite (checked out above), same as the setup-*
+    # steps here — keeps the just version/checksums defined in one place.
+    - name: Setup just
+      uses: ./.github/actions/setup-just
+
     - name: Compute canonical version
       shell: bash
       run: |
@@ -91,9 +96,11 @@ runs:
       env:
         FOSSA_API_KEY: ${{ inputs.slsa-workflow-secret2 }}
       run: |
-        make release-artifacts DRY_RUN=false \
-          GOODMEM_VERSION="$GOODMEM_VERSION" \
-          CLI_VERSION="$CLI_VERSION"
+        # GOODMEM_VERSION and CLI_VERSION are exported to the environment above;
+        # the cli/server release recipes read them via env(...). Always a real
+        # build (dry_run=false); draft-release mode is handled separately by the
+        # image-naming and gh-release steps, not here.
+        just release-artifacts false
 
     - name: Generate layout file
       id: layout
