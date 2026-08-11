@@ -275,7 +275,10 @@ jobs:
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
         with:
           name: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-name }}
-          path: dist
+          # The artifact already contains a top-level dist/ folder (as the publish
+          # job relies on), so extract to "." — path: dist nests to dist/dist/.
+          # Confirmed by the C2 validation run 31451257733.
+          path: "."
           sha256: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-sha256 }}
 
       - name: Download provenance bundles (.build.slsa)
@@ -288,6 +291,7 @@ jobs:
       - name: Install the freshly-built CLI
         run: |
           set -euo pipefail
+          echo "dist/ contents:"; ls -la dist/ || true
           tar -xzf dist/goodmem-linux-amd64.tar.gz -C /tmp
           sudo install -m0755 /tmp/goodmem-linux-amd64 /usr/local/bin/goodmem
           goodmem version || true
@@ -331,13 +335,23 @@ jobs:
       # --local-bundle` against the freshly-built tarball + its .build.slsa bundle
       # (verify-then-install). A throwaway copy is upgraded so the swap is harmless;
       # a green exit means the binary's SLSA provenance verified.
+      #
+      # NOTE: the install + system-upgrade steps above are validated end-to-end by
+      # the C2 spike run 31451257733. This binary-verify step needs the CLI's
+      # `--local-bundle` flag (goodmem #1396), which isn't on main yet, so it was
+      # dropped from that spike and gets its first real exercise on the first
+      # release built after #1396 merges. The bundle is located via `find` (rather
+      # than a hardcoded path) to be robust to the attestations artifact's layout.
       - name: verify release CLI binary provenance
         run: |
           set -euo pipefail
+          echo "provenance/ contents:"; find provenance -type f || true
+          BUNDLE="$(find provenance -name 'goodmem-linux-amd64.tar.gz.build.slsa' -print -quit)"
+          test -n "$BUNDLE" || { echo "no goodmem-linux-amd64.tar.gz.build.slsa under provenance/"; exit 1; }
           cp "$(command -v goodmem)" /tmp/gm-verify
           /tmp/gm-verify upgrade --yes \
             --local-cli-tarball dist/goodmem-linux-amd64.tar.gz \
-            --local-bundle provenance/goodmem-linux-amd64.tar.gz.build.slsa
+            --local-bundle "$BUNDLE"
 
   publish:
     needs: [slsa-run, docker-build, container-provenance-server, verify-release]
