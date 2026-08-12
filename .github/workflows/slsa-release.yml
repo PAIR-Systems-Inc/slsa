@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      verify-only:
+        description: "Verify-only mode: build + attest to not-for-release image names, run verify-release against the freshly-signed artifacts, then STOP — publish is skipped, so NO tags move and NO GitHub release (draft or otherwise) is created. For the pre-release signing-verification PR check."
+        required: false
+        type: boolean
+        default: false
     secrets:
       REPO_TOKEN:
         description: "GitHub token with access to clone private repo"
@@ -159,7 +164,7 @@ jobs:
       - name: Select image name
         id: image
         run: |
-          if [ "${{ inputs.draft-release }}" = "true" ]; then
+          if [ "${{ inputs.draft-release }}" = "true" ] || [ "${{ inputs.verify-only }}" = "true" ]; then
             echo "name=ghcr.io/pair-systems-inc/goodmem/not-for-release-server" >> "$GITHUB_OUTPUT"
           else
             echo "name=ghcr.io/pair-systems-inc/goodmem/server" >> "$GITHUB_OUTPUT"
@@ -195,8 +200,117 @@ jobs:
       registry-password: ${{ secrets.REPO_TOKEN }}
       provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
-  publish:
+  # Runs the REAL customer install + upgrade + CLI-binary verify against the exact
+  # image/binary this run built and signed.
+  verify-release:
     needs: [slsa-run, docker-build, container-provenance-server]
+    permissions:
+      contents: read
+      packages: read
+    runs-on: arc-release
+    env:
+      IMAGE: ${{ needs.docker-build.outputs.image }}@${{ needs.docker-build.outputs.digest }}
+      PRIOR_IMAGE: ghcr.io/pair-systems-inc/goodmem/server:latest
+      PROFILE: relverify
+      READYZ: http://localhost:8080/readyz
+    steps:
+      - name: Install runner packages (git-lfs, xxd)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends git-lfs xxd
+          git lfs install --skip-repo
+
+      - name: Checkout goodmem
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.REPO_TOKEN }}
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup make
+        uses: ./.github/actions/setup-make
+
+      - name: Ensure docker compose
+        uses: ./.github/actions/ensure-compose
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.REPO_TOKEN }}
+
+      - name: Download release CLI artifacts
+        uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
+        with:
+          name: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-name }}
+          path: "."
+          sha256: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-sha256 }}
+
+      - name: Download provenance bundles (.build.slsa)
+        uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
+        with:
+          name: ${{ needs.slsa-run.outputs.attestations-download-name }}
+          path: provenance
+          sha256: ${{ needs.slsa-run.outputs.attestations-download-sha256 }}
+
+      - name: Install the freshly-built CLI
+        run: |
+          set -euo pipefail
+          echo "dist/ contents:"; ls -la dist/ || true
+          tar -xzf dist/goodmem-linux-amd64.tar.gz -C /tmp
+          sudo install -m0755 /tmp/goodmem-linux-amd64 /usr/local/bin/goodmem
+          goodmem version || true
+
+      - name: system install (this release's image, verify ON)
+        run: |
+          set -euo pipefail
+          DBPASS="verify-$(openssl rand -hex 8)"
+          goodmem system install \
+            --handsfree --checkmark-logger --skip-docker-install \
+            --tls-disabled --db-password "$DBPASS" \
+            --goodmem-image "$IMAGE" \
+            --profile-name "$PROFILE"
+          curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
+
+      - name: uninstall (clean state for the upgrade scenario)
+        run: |
+          set -euo pipefail
+          goodmem system uninstall --profile-name "$PROFILE" --yes-delete-data
+
+      - name: system install (prior :latest, verify ON)
+        run: |
+          set -euo pipefail
+          DBPASS="verify-$(openssl rand -hex 8)"
+          goodmem system install \
+            --handsfree --checkmark-logger --skip-docker-install \
+            --tls-disabled --db-password "$DBPASS" \
+            --goodmem-image "$PRIOR_IMAGE" \
+            --profile-name "$PROFILE"
+          curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
+
+      - name: system upgrade to this release's image (verify ON)
+        run: |
+          set -euo pipefail
+          goodmem system upgrade --profile-name "$PROFILE" --image "$IMAGE" --skip-cli-check
+          curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
+
+      - name: verify release CLI binary provenance
+        run: |
+          set -euo pipefail
+          echo "provenance/ contents:"; find provenance -type f || true
+          BUNDLE="$(find provenance -name 'goodmem-linux-amd64.tar.gz.build.slsa' -print -quit)"
+          test -n "$BUNDLE" || { echo "no goodmem-linux-amd64.tar.gz.build.slsa under provenance/"; exit 1; }
+          cp "$(command -v goodmem)" /tmp/gm-verify
+          /tmp/gm-verify upgrade --yes \
+            --local-cli-tarball dist/goodmem-linux-amd64.tar.gz \
+            --local-bundle "$BUNDLE"
+
+  publish:
+    needs: [slsa-run, docker-build, container-provenance-server, verify-release]
+    if: ${{ !inputs.verify-only }}
     permissions:
       contents: write
       packages: write
