@@ -296,10 +296,44 @@ jobs:
           sudo install -m0755 /tmp/goodmem-linux-amd64 /usr/local/bin/goodmem
           goodmem version || true
 
-      # (1) INSTALL — verify ON — the prior published :latest (a signed release):
-      # exercises the real pull -> cosign verify-attestation -> digest-match path
-      # AND is the arc-release sigstore/compose probe. This is the customer's
-      # current state before they upgrade to the release under test.
+      # (1) FRESH INSTALL — verify ON — of THIS run's freshly-built image by
+      # digest. The primary customer path for a new release: a brand-new
+      # `curl|bash` install pulls the new image, verifies its SLSA provenance,
+      # and boots. The image-verify code is shared with upgrade, but the fresh
+      # install FLOW (clean compose, first DB init, first boot of the new server)
+      # is exercised ONLY here — the upgrade scenario below reaches the new image
+      # in-place over an existing install, so it can't catch a fresh-boot/migration
+      # regression that only manifests on a clean install.
+      - name: system install (this release's image, verify ON)
+        env:
+          IMAGE: ${{ needs.docker-build.outputs.image }}@${{ needs.docker-build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          DBPASS="verify-$(openssl rand -hex 8)"
+          goodmem system install \
+            --handsfree --checkmark-logger --skip-docker-install \
+            --tls-disabled --db-password "$DBPASS" \
+            --goodmem-image "$IMAGE" \
+            --profile-name relverify
+          for _ in $(seq 1 60); do
+            curl -fsS http://localhost:8080/readyz >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/readyz
+
+      # (2) TEARDOWN — clean uninstall so the upgrade scenario starts from the
+      # customer's real pre-upgrade state (the prior published :latest), not from
+      # the image we just installed. --yes-delete-data is non-interactive and
+      # removes containers + profile + install dir (frees port 8080 + the DB volume).
+      - name: uninstall (clean state for the upgrade scenario)
+        run: |
+          set -euo pipefail
+          goodmem system uninstall --profile-name relverify --yes-delete-data
+
+      # (3) INSTALL — verify ON — the prior published :latest (a signed release):
+      # exercises the real pull -> cosign verify-attestation -> digest-match path.
+      # This is the customer's current state before they upgrade to the release
+      # under test.
       - name: system install (prior :latest, verify ON)
         run: |
           set -euo pipefail
@@ -315,7 +349,7 @@ jobs:
           done
           curl -fsS http://localhost:8080/readyz
 
-      # (2) SYSTEM UPGRADE — verify ON — to THIS run's freshly-built image by
+      # (4) SYSTEM UPGRADE — verify ON — to THIS run's freshly-built image by
       # digest. This is the gate: the image we are about to publish must verify +
       # come up healthy for a customer upgrading to it. --skip-cli-check avoids the
       # get.goodmem.ai CLI-version precheck (this CLI is not yet published).
@@ -331,7 +365,7 @@ jobs:
           done
           curl -fsS http://localhost:8080/readyz
 
-      # (3) CLI BINARY VERIFY — the real `goodmem upgrade --local-cli-tarball
+      # (5) CLI BINARY VERIFY — the real `goodmem upgrade --local-cli-tarball
       # --local-bundle` against the freshly-built tarball + its .build.slsa bundle
       # (verify-then-install). A throwaway copy is upgraded so the swap is harmless;
       # a green exit means the binary's SLSA provenance verified.
