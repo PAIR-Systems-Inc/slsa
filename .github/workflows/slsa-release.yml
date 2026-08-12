@@ -203,35 +203,21 @@ jobs:
       registry-password: ${{ secrets.REPO_TOKEN }}
       provenance-registry-password: ${{ secrets.REPO_TOKEN }}
 
-  # verify-release runs the REAL customer install + upgrade + CLI-binary verify
-  # against the exact image/binary this run just built and signed, BEFORE anything
-  # is made public. `publish` depends on it, so an artifact that would not verify
-  # for a customer can never get a :latest/:vX tag or a GitHub release
-  # (verify-then-publish). Signing (this pipeline) and verification (the installer)
-  # can only break if one of them changes, so this exercises the real machinery on
-  # the real bytes — no stand-in image, no post-release smoke.
-  #
-  # Runs in the CALLER's context (goodmem, PRIVATE) because this is a reusable
-  # workflow, so its logs (image digests, install output) stay private even though
-  # this file lives in the public slsa repo — this workflow is workflow_call only
-  # and never runs ON the slsa repo.
-  #
-  # arc-release capability CONFIRMED (verify-only dispatch, run 31544079682): a
-  # rootful dockerd `docker compose up`s the server + postgres and binds
-  # localhost:8080, and sigstore egress (fulcio/rekor/tuf) for `cosign
-  # verify-attestation` works — `system install` (verify ON) + `system upgrade`
-  # (verify ON) pass end-to-end here.
+  # Runs the REAL customer install + upgrade + CLI-binary verify against the exact
+  # image/binary this run built and signed; `publish` needs it, so an artifact that
+  # wouldn't verify for a customer never gets a tag or GitHub release. Being
+  # workflow_call-only, it runs in the caller's (goodmem, private) context, so
+  # digests/install output stay off this public repo. arc-release compose + sigstore
+  # egress confirmed by run 31544079682.
   verify-release:
     needs: [slsa-run, docker-build, container-provenance-server]
     permissions:
       contents: read
       packages: read
     runs-on: arc-release
-    # IMAGE = the image this release just built + signed (by digest). PRIOR_IMAGE =
-    # the published :latest a customer upgrades FROM. Every install/upgrade step
-    # shares PROFILE + READYZ. READYZ is polled with `curl --retry`: /readyz is 503
-    # until ready and connection-refused before the server binds, both of which
-    # curl's default retry set (+ --retry-connrefused) covers.
+    # IMAGE = this release (by digest); PRIOR_IMAGE = the :latest customers upgrade
+    # from. /readyz is 503-until-ready + connrefused-before-bind, so `curl --retry`
+    # polls it correctly.
     env:
       IMAGE: ${{ needs.docker-build.outputs.image }}@${{ needs.docker-build.outputs.digest }}
       PRIOR_IMAGE: ghcr.io/pair-systems-inc/goodmem/server:latest
@@ -256,8 +242,7 @@ jobs:
       - name: Setup make
         uses: ./.github/actions/setup-make
 
-      # arc images ship docker but not the compose plugin; the install's
-      # `docker compose up` exits 125 without this.
+      # arc images ship docker but not the compose plugin.
       - name: Ensure docker compose
         uses: ./.github/actions/ensure-compose
 
@@ -268,22 +253,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
 
-      # secure-download-folder shells out to xxd via .github/actions/rng; the stock
-      # runner image lacks vim-common.
+      # secure-download-folder shells out to xxd (absent on the stock runner image).
       - name: Install xxd
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends xxd
 
-      # The freshly-built release CLI (the exact binary being shipped) + its SLSA
-      # provenance bundles, straight from this run's slsa-run outputs.
       - name: Download release CLI artifacts
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
         with:
           name: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-name }}
-          # The artifact already contains a top-level dist/ folder (as the publish
-          # job relies on), so extract to "." — path: dist nests to dist/dist/.
-          # Confirmed by the C2 validation run 31451257733.
+          # Artifact already has a top-level dist/, so extract to "." (path: dist
+          # would nest to dist/dist/).
           path: "."
           sha256: ${{ fromJson(needs.slsa-run.outputs.build-artifacts-outputs).artifact-download-sha256 }}
 
@@ -302,14 +283,9 @@ jobs:
           sudo install -m0755 /tmp/goodmem-linux-amd64 /usr/local/bin/goodmem
           goodmem version || true
 
-      # (1) FRESH INSTALL — verify ON — of THIS run's freshly-built image by
-      # digest. The primary customer path for a new release: a brand-new
-      # `curl|bash` install pulls the new image, verifies its SLSA provenance,
-      # and boots. The image-verify code is shared with upgrade, but the fresh
-      # install FLOW (clean compose, first DB init, first boot of the new server)
-      # is exercised ONLY here — the upgrade scenario below reaches the new image
-      # in-place over an existing install, so it can't catch a fresh-boot/migration
-      # regression that only manifests on a clean install.
+      # (1) Fresh install of THIS release's image (verify ON) — the new-customer
+      # path. Only here is the fresh install FLOW (clean compose, first DB init,
+      # first boot) exercised; the upgrade below reaches the new image in-place.
       - name: system install (this release's image, verify ON)
         run: |
           set -euo pipefail
@@ -321,19 +297,15 @@ jobs:
             --profile-name "$PROFILE"
           curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
 
-      # (2) TEARDOWN — clean uninstall so the upgrade scenario starts from the
-      # customer's real pre-upgrade state (the prior published :latest), not from
-      # the image we just installed. --yes-delete-data is non-interactive and
-      # removes containers + profile + install dir (frees port 8080 + the DB volume).
+      # (2) Clean teardown so the upgrade below starts from the customer's real
+      # pre-upgrade state. --yes-delete-data is non-interactive.
       - name: uninstall (clean state for the upgrade scenario)
         run: |
           set -euo pipefail
           goodmem system uninstall --profile-name "$PROFILE" --yes-delete-data
 
-      # (3) INSTALL — verify ON — the prior published :latest (a signed release):
-      # exercises the real pull -> cosign verify-attestation -> digest-match path.
-      # This is the customer's current state before they upgrade to the release
-      # under test.
+      # (3) Install the prior published :latest (verify ON) — the customer's state
+      # before upgrading to the release under test.
       - name: system install (prior :latest, verify ON)
         run: |
           set -euo pipefail
@@ -345,27 +317,18 @@ jobs:
             --profile-name "$PROFILE"
           curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
 
-      # (4) SYSTEM UPGRADE — verify ON — to THIS run's freshly-built image by
-      # digest. This is the gate: the image we are about to publish must verify +
-      # come up healthy for a customer upgrading to it. --skip-cli-check avoids the
-      # get.goodmem.ai CLI-version precheck (this CLI is not yet published).
+      # (4) Upgrade to this release's image (verify ON) — the customer upgrade path.
+      # --skip-cli-check skips the get.goodmem.ai precheck (this CLI isn't published).
       - name: system upgrade to this release's image (verify ON)
         run: |
           set -euo pipefail
           goodmem system upgrade --profile-name "$PROFILE" --image "$IMAGE" --skip-cli-check
           curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
 
-      # (5) CLI BINARY VERIFY — the real `goodmem upgrade --local-cli-tarball
-      # --local-bundle` against the freshly-built tarball + its .build.slsa bundle
-      # (verify-then-install). A throwaway copy is upgraded so the swap is harmless;
-      # a green exit means the binary's SLSA provenance verified.
-      #
-      # NOTE: the CLI's `--local-bundle` flag (goodmem #1403) is now on main. The
-      # builder-ID check requires a TAG ref (@refs/tags/), so this step first goes
-      # green when goodmem invokes this workflow BY TAG — i.e. C3's verify-only PR
-      # check against @v1.0.14. A branch-ref spike correctly fails it (the ref is
-      # @refs/heads/…). The bundle is located via `find` to be robust to the
-      # attestations artifact's layout.
+      # (5) Verify the CLI binary's SLSA provenance via the real `goodmem upgrade
+      # --local-cli-tarball --local-bundle` (goodmem #1403) on a throwaway copy. The
+      # builder-ID check requires a TAG ref, so this first goes green when goodmem
+      # calls this workflow by tag (C3's verify-only check @v1.0.14), not a branch spike.
       - name: verify release CLI binary provenance
         run: |
           set -euo pipefail
