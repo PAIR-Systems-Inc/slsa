@@ -164,9 +164,6 @@ jobs:
       - name: Select image name
         id: image
         run: |
-          # Both draft-release and verify-only build to the throwaway
-          # not-for-release name so the real `server` repo/tags are never touched
-          # unless this is a real release that will actually publish.
           if [ "${{ inputs.draft-release }}" = "true" ] || [ "${{ inputs.verify-only }}" = "true" ]; then
             echo "name=ghcr.io/pair-systems-inc/goodmem/not-for-release-server" >> "$GITHUB_OUTPUT"
           else
