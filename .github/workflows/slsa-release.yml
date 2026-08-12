@@ -214,10 +214,10 @@ jobs:
       PROFILE: relverify
       READYZ: http://localhost:8080/readyz
     steps:
-      - name: Install git-lfs
+      - name: Install runner packages (git-lfs, xxd)
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends git-lfs
+          sudo apt-get install -y --no-install-recommends git-lfs xxd
           git lfs install --skip-repo
 
       - name: Checkout goodmem
@@ -241,11 +241,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.REPO_TOKEN }}
-
-      - name: Install xxd
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends xxd
 
       - name: Download release CLI artifacts
         uses: slsa-framework/slsa-github-generator/.github/actions/secure-download-folder@v2.1.0
