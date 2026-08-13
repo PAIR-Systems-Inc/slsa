@@ -279,12 +279,15 @@ jobs:
         run: |
           set -euo pipefail
           goodmem system uninstall --profile-name "$PROFILE" --yes-delete-data
-          # uninstall does NOT reliably clear the postgres data: the pgdata bind
-          # mount (${HOME}/.goodmem/installs/local-docker/${PROFILE}/data/pgdata) is
-          # owned by the pg container user, so a stale cluster persists carrying the
-          # first install's DB password; the reinstall mints a fresh random password
-          # that then fails to auth and the server never becomes ready. Purge the
-          # relverify-scoped state so the reinstall starts from a clean cluster.
+          # TEMPORARY WORKAROUND — remove once the goodmem installer/issue-803 stack
+          # lands on main. `uninstall --yes-delete-data` does NOT clear the postgres
+          # data (the pgdata bind mount at
+          # ${HOME}/.goodmem/installs/local-docker/${PROFILE}/data/pgdata is owned by
+          # the pg container user), so a stale cluster persists carrying the first
+          # install's DB password; the reinstall mints a fresh random password that
+          # then fails to auth and the server never becomes ready. issue-803 fixes
+          # the uninstall itself; until it merges, purge the relverify-scoped state
+          # here so the upgrade scenario's reinstall starts from a clean cluster.
           # (Validated by an arc-release install->uninstall->install probe.)
           DATA_DIR="${HOME}/.goodmem/installs/local-docker/${PROFILE}/data"
           docker rm -f "goodmem-${PROFILE}-db" "goodmem-${PROFILE}-server" 2>/dev/null || true
