@@ -5,27 +5,38 @@ SELF := $(MAKE) -f Makefile.slsa
 # Version computation
 #
 # version.txt is the single source of truth for the base version (e.g. 1.2.3).
-# If this release changes version.txt it is a stable release; otherwise it is
-# an edge release whose number increments from the last tag.
+# The first release of a base version is that version's stable release; every
+# later release of the same base version is an edge release whose number
+# increments from the last edge tag.
 # ---------------------------------------------------------------------------
 BASE_VERSION := $(shell cat version.txt 2>/dev/null | tr -d '[:space:]')
 
-# Stable when this release changes version.txt, edge otherwise.
+# Tag that marks "this base version has already had its stable release".
+STABLE_TAG := server-v$(BASE_VERSION)
+
+# Stable when this base version has not been released yet, edge otherwise.
 #
-# We compare version.txt at HEAD against version.txt at HEAD's first parent
-# rather than checking which commit's SHA last touched the file. On a merge
-# commit (GitHub's default PR merge), the version bump lives in a merged-in
-# parent, so the last-touching commit is never HEAD itself — the old SHA
-# equality check misclassified every version-bumping PR merge as edge. A
-# first-parent content diff is correct for merge commits, squash merges, and
-# linear history alike.
+# The rule is state-based — "has server-v<BASE_VERSION> shipped?" — rather than
+# a diff of version.txt between HEAD and HEAD's first parent. The diff was only
+# ever true on the one commit whose first-parent diff carried the bump, so the
+# stable release was lost whenever that commit was not the commit released:
+# a rebase merge or any multi-commit push puts the bump behind the pushed tip,
+# and a release run that fails on the bump commit never gets a second chance —
+# every later push then built an edge of a version that never shipped stable
+# (goodmem 1.0.310). Asking whether the version has shipped is independent of
+# merge style and self-heals after a failed run.
+#
+# A stable tag already on HEAD means this exact commit's stable release is being
+# rebuilt, so re-runs stay idempotent instead of turning into an edge release.
 IS_EDGE_RELEASE := $(shell \
-  head_version=$$(git show HEAD:version.txt 2>/dev/null | tr -d '[:space:]'); \
-  parent_version=$$(git show HEAD^1:version.txt 2>/dev/null | tr -d '[:space:]'); \
-  if [ -n "$$head_version" ] && [ "$$head_version" != "$$parent_version" ]; then \
-    echo "false"; \
-  else \
+  if [ -z "$(BASE_VERSION)" ]; then \
     echo "true"; \
+  elif git tag --points-at HEAD 2>/dev/null | grep -Fxq "$(STABLE_TAG)"; then \
+    echo "false"; \
+  elif git rev-parse -q --verify "refs/tags/$(STABLE_TAG)" >/dev/null 2>&1; then \
+    echo "true"; \
+  else \
+    echo "false"; \
   fi)
 
 # ---------------------------------------------------------------------------
@@ -178,13 +189,19 @@ promote-docker-image:
 	done
 
 # Env: GITHUB_REPOSITORY
-# Uses: release-flags, GOODMEM_VERSION
+# Uses: release-flags, GOODMEM_VERSION, BUILD_COMMIT_SHA
+#
+# --target pins the new tag to the commit that was actually built. Without it
+# gh tags the default branch's current tip, so a release cut from an older
+# commit plants its tag on whatever landed on main in the meantime — which then
+# feeds the tag-based version state above.
 .PHONY: create-github-release
 create-github-release:
 	@FLAGS=$$($(SELF) --no-print-directory release-flags) && \
 	RELEASE_NOTE_ARGS=$$($(SELF) --no-print-directory release-note-args) && \
-	echo "Creating release $(GOODMEM_VERSION)..." && \
-	gh -R "$$GITHUB_REPOSITORY" release create "$(GOODMEM_VERSION)" $$FLAGS $$RELEASE_NOTE_ARGS --generate-notes
+	echo "Creating release $(GOODMEM_VERSION) at $(BUILD_COMMIT_SHA)..." && \
+	gh -R "$$GITHUB_REPOSITORY" release create "$(GOODMEM_VERSION)" \
+		--target "$(BUILD_COMMIT_SHA)" $$FLAGS $$RELEASE_NOTE_ARGS --generate-notes
 
 # Env: GITHUB_REPOSITORY, ATTESTATIONS_DIR
 # Uses: GOODMEM_VERSION
@@ -304,7 +321,8 @@ test:
 	[ "$$RESULT" = "--notes-start-tag=server-v1.2.3" ] || { echo "FAIL: expected --notes-start-tag=server-v1.2.3, got $$RESULT" >&2; exit 1; } && \
 	echo "  release-note-args = $$RESULT  OK" && \
 	\
-	echo "--- Test 11: Edge resets to 1 after version bump ---" && \
+	echo "--- Test 11: Edge resets to 1 after the version's stable release ---" && \
+	eval $$MK bump-tag && \
 	git commit --allow-empty -q -m "feature D" && \
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "2.0.0_edge_1" ] || { echo "FAIL: expected 2.0.0_edge_1, got $$RESULT" >&2; exit 1; } && \
@@ -340,6 +358,7 @@ test:
 	echo "  docker-tags = $$RESULT  OK" && \
 	\
 	echo "--- Test 17: release-flags --prerelease for edge ---" && \
+	eval $$MK bump-tag && \
 	git commit --allow-empty -q -m "feature E" && \
 	RESULT=$$(eval $$MK release-flags) && \
 	[ "$$RESULT" = "--prerelease" ] || { echo "FAIL: expected --prerelease, got $$RESULT" >&2; exit 1; } && \
@@ -379,6 +398,7 @@ test:
 	echo "  current-version = 3.0.0  OK" && \
 	\
 	echo "--- Test 23: merge commit not touching version.txt is an edge release ---" && \
+	eval $$MK bump-tag && \
 	git checkout -q -b feature-branch-2 && \
 	git commit --allow-empty -q -m "feature without version bump" && \
 	git checkout -q - && \
@@ -386,5 +406,47 @@ test:
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "3.0.0_edge_1" ] || { echo "FAIL: expected 3.0.0_edge_1 (edge) for non-bumping merge, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = 3.0.0_edge_1  OK" && \
+	\
+	echo "--- Test 24: bump behind the pushed tip is still stable ---" && \
+	eval $$MK bump-tag && \
+	echo "4.0.0" > version.txt && \
+	git add version.txt && git commit -q -m "bump to 4.0.0" && \
+	git commit --allow-empty -q -m "later commit in the same push" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "4.0.0" ] || { echo "FAIL: expected 4.0.0 (stable) when the bump is not the released commit, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = $$RESULT  OK" && \
+	\
+	echo "--- Test 25: stable survives a failed run on the bump commit ---" && \
+	eval $$MK bump-tag && \
+	echo "5.0.0" > version.txt && \
+	git add version.txt && git commit -q -m "bump to 5.0.0" && \
+	git commit --allow-empty -q -m "next commit; the bump commit's run never released" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "5.0.0" ] || { echo "FAIL: expected 5.0.0 (stable) after a failed run on the bump commit, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = $$RESULT  OK" && \
+	\
+	echo "--- Test 26: re-running a stable release stays stable ---" && \
+	eval $$MK bump-tag && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "5.0.0" ] || { echo "FAIL: expected 5.0.0 on stable re-run, got $$RESULT" >&2; exit 1; } && \
+	RESULT=$$(eval $$MK release-flags) && \
+	[ -z "$$RESULT" ] || { echo "FAIL: expected empty release-flags on stable re-run, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = 5.0.0, release-flags = (empty)  OK" && \
+	\
+	echo "--- Test 27: edge starts at 1 after a stable release, then increments ---" && \
+	git commit --allow-empty -q -m "first commit after the stable release" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "5.0.0_edge_1" ] || { echo "FAIL: expected 5.0.0_edge_1, got $$RESULT" >&2; exit 1; } && \
+	eval $$MK bump-tag && \
+	git commit --allow-empty -q -m "second commit after the stable release" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "5.0.0_edge_2" ] || { echo "FAIL: expected 5.0.0_edge_2, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = 5.0.0_edge_1 then 5.0.0_edge_2  OK" && \
+	\
+	echo "--- Test 28: create-github-release tags the commit that was built ---" && \
+	SHA=$$(git rev-parse HEAD) && \
+	RESULT=$$(eval $$MK -n create-github-release) && \
+	echo "$$RESULT" | grep -qF -- "--target \"$$SHA\"" || { echo "FAIL: expected --target \"$$SHA\" in the recipe, got: $$RESULT" >&2; exit 1; } && \
+	echo "  create-github-release targets $$SHA  OK" && \
 	\
 	echo "" && echo "All tests passed."
