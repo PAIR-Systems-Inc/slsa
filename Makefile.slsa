@@ -43,27 +43,36 @@ IS_EDGE_RELEASE := $(shell \
 # Compute GOODMEM_VERSION
 #
 # Stable:  server-v1.2.3
-# Edge:    server-v1.2.3_edge_N  (N = last edge tag + 1, starting from 1)
+# Edge:    server-v1.2.3-edge.N  (N = last edge tag + 1, starting from 1)
+#
+# The edge suffix is a semver pre-release ("-edge.N"), not "_edge_N". This
+# string is stamped into the CLI binary via ldflags and parsed with semver at
+# runtime; an underscore is not valid semver, so edge builds made
+# `goodmem upgrade` fail outright ("invalid semantic version").
+#
+# Tag scanning accepts the legacy "_edge_N" spelling as well so the counter
+# keeps incrementing across the format change. Only the new form is emitted.
 # ---------------------------------------------------------------------------
 ifeq ($(IS_EDGE_RELEASE),true)
   # Edge number already tagged on HEAD (empty if none)
   HEAD_EDGE := $(shell \
     git tag --points-at HEAD 2>/dev/null \
-      | grep "^server-v$(BASE_VERSION)_edge_" \
-      | sed 's/.*_edge_//' | sort -n | tail -1)
+      | grep -E "^server-v$(BASE_VERSION)(_edge_|-edge\.)" \
+      | sed -E 's/.*(_edge_|-edge\.)//' | sort -n | tail -1)
 
   # Highest edge number across all tags for this base version (0 if none)
   LAST_EDGE := $(shell \
-    last=$$(git tag -l "server-v$(BASE_VERSION)_edge_*" 2>/dev/null \
-      | sed 's/.*_edge_//' | sort -n | tail -1); \
+    last=$$(git tag -l "server-v$(BASE_VERSION)_edge_*" \
+                       "server-v$(BASE_VERSION)-edge.*" 2>/dev/null \
+      | sed -E 's/.*(_edge_|-edge\.)//' | sort -n | tail -1); \
     echo "$${last:-0}")
 
   ifdef HEAD_EDGE
     # HEAD was already tagged — reuse that number (idempotent)
-    GOODMEM_VERSION := server-v$(BASE_VERSION)_edge_$(HEAD_EDGE)
+    GOODMEM_VERSION := server-v$(BASE_VERSION)-edge.$(HEAD_EDGE)
   else
     # No tag on HEAD — increment from the last edge tag
-    GOODMEM_VERSION := server-v$(BASE_VERSION)_edge_$(shell echo $$(( $(LAST_EDGE) + 1 )))
+    GOODMEM_VERSION := server-v$(BASE_VERSION)-edge.$(shell echo $$(( $(LAST_EDGE) + 1 )))
   endif
 else
   GOODMEM_VERSION := server-v$(BASE_VERSION)
@@ -79,12 +88,12 @@ SHELL := /bin/bash
 # Version targets
 # ---------------------------------------------------------------------------
 
-# Bare version string (e.g. 1.2.3 or 1.2.3_edge_2)
+# Bare version string (e.g. 1.2.3 or 1.2.3-edge.2)
 .PHONY: current-version
 current-version:
 	@echo "$(GOODMEM_VERSION)" | sed 's/^server-v//'
 
-# Full git tag (e.g. server-v1.2.3_edge_2)
+# Full git tag (e.g. server-v1.2.3-edge.2)
 .PHONY: release-tag
 release-tag:
 	@echo "$(GOODMEM_VERSION)"
@@ -271,7 +280,7 @@ test:
 	echo "--- Test 2: First edge release (no prior edge tags) ---" && \
 	git commit --allow-empty -q -m "feature A" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "1.2.3_edge_1" ] || { echo "FAIL: expected 1.2.3_edge_1, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "1.2.3-edge.1" ] || { echo "FAIL: expected 1.2.3-edge.1, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
 	echo "--- Test 3: bump-tag creates tag, is idempotent ---" && \
@@ -281,25 +290,25 @@ test:
 	\
 	echo "--- Test 4: Version stable after bump-tag (HEAD_EDGE) ---" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "1.2.3_edge_1" ] || { echo "FAIL: expected 1.2.3_edge_1, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "1.2.3-edge.1" ] || { echo "FAIL: expected 1.2.3-edge.1, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
 	echo "--- Test 5: Edge increments from previous tag ---" && \
 	git commit --allow-empty -q -m "feature B" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "1.2.3_edge_2" ] || { echo "FAIL: expected 1.2.3_edge_2, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "1.2.3-edge.2" ] || { echo "FAIL: expected 1.2.3-edge.2, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
 	echo "--- Test 6: Third edge release after bump-tag ---" && \
 	eval $$MK bump-tag && \
 	git commit --allow-empty -q -m "feature C" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "1.2.3_edge_3" ] || { echo "FAIL: expected 1.2.3_edge_3, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "1.2.3-edge.3" ] || { echo "FAIL: expected 1.2.3-edge.3, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
 	echo "--- Test 7: release-tag includes server-v prefix ---" && \
 	RESULT=$$(eval $$MK release-tag) && \
-	[ "$$RESULT" = "server-v1.2.3_edge_3" ] || { echo "FAIL: expected server-v1.2.3_edge_3, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "server-v1.2.3-edge.3" ] || { echo "FAIL: expected server-v1.2.3-edge.3, got $$RESULT" >&2; exit 1; } && \
 	echo "  release-tag = $$RESULT  OK" && \
 	\
 	echo "--- Test 8: New stable release ---" && \
@@ -325,7 +334,7 @@ test:
 	eval $$MK bump-tag && \
 	git commit --allow-empty -q -m "feature D" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "2.0.0_edge_1" ] || { echo "FAIL: expected 2.0.0_edge_1, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "2.0.0-edge.1" ] || { echo "FAIL: expected 2.0.0-edge.1, got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
 	\
 	echo "--- Test 12: image-prefix for normal release ---" && \
@@ -404,8 +413,8 @@ test:
 	git checkout -q - && \
 	git merge -q --no-ff -m "Merge pull request: no version bump" feature-branch-2 && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "3.0.0_edge_1" ] || { echo "FAIL: expected 3.0.0_edge_1 (edge) for non-bumping merge, got $$RESULT" >&2; exit 1; } && \
-	echo "  current-version = 3.0.0_edge_1  OK" && \
+	[ "$$RESULT" = "3.0.0-edge.1" ] || { echo "FAIL: expected 3.0.0-edge.1 (edge) for non-bumping merge, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = 3.0.0-edge.1  OK" && \
 	\
 	echo "--- Test 24: bump behind the pushed tip is still stable ---" && \
 	eval $$MK bump-tag && \
@@ -436,17 +445,43 @@ test:
 	echo "--- Test 27: edge starts at 1 after a stable release, then increments ---" && \
 	git commit --allow-empty -q -m "first commit after the stable release" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "5.0.0_edge_1" ] || { echo "FAIL: expected 5.0.0_edge_1, got $$RESULT" >&2; exit 1; } && \
+	[ "$$RESULT" = "5.0.0-edge.1" ] || { echo "FAIL: expected 5.0.0-edge.1, got $$RESULT" >&2; exit 1; } && \
 	eval $$MK bump-tag && \
 	git commit --allow-empty -q -m "second commit after the stable release" && \
 	RESULT=$$(eval $$MK current-version) && \
-	[ "$$RESULT" = "5.0.0_edge_2" ] || { echo "FAIL: expected 5.0.0_edge_2, got $$RESULT" >&2; exit 1; } && \
-	echo "  current-version = 5.0.0_edge_1 then 5.0.0_edge_2  OK" && \
+	[ "$$RESULT" = "5.0.0-edge.2" ] || { echo "FAIL: expected 5.0.0-edge.2, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = 5.0.0-edge.1 then 5.0.0-edge.2  OK" && \
 	\
 	echo "--- Test 28: create-github-release tags the commit that was built ---" && \
 	SHA=$$(git rev-parse HEAD) && \
 	RESULT=$$(eval $$MK -n create-github-release) && \
 	echo "$$RESULT" | grep -qF -- "--target \"$$SHA\"" || { echo "FAIL: expected --target \"$$SHA\" in the recipe, got: $$RESULT" >&2; exit 1; } && \
 	echo "  create-github-release targets $$SHA  OK" && \
+	\
+	echo "--- Test 29: edge counter continues across the legacy _edge_ format ---" && \
+	echo "6.0.0" > version.txt && \
+	git add version.txt && git commit -q -m "set version 6.0.0" && \
+	git tag server-v6.0.0 && \
+	git commit --allow-empty -q -m "post-stable commit" && \
+	git tag server-v6.0.0_edge_3 && \
+	git commit --allow-empty -q -m "next commit" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "6.0.0-edge.4" ] || { echo "FAIL: expected 6.0.0-edge.4 (continue past legacy _edge_3), got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = $$RESULT  OK" && \
+	\
+	echo "--- Test 30: legacy _edge_ tag on HEAD is reused as its own number ---" && \
+	git commit --allow-empty -q -m "commit carrying a legacy tag" && \
+	git tag server-v6.0.0_edge_9 && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "6.0.0-edge.9" ] || { echo "FAIL: expected 6.0.0-edge.9 from legacy tag on HEAD, got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = $$RESULT  OK" && \
+	\
+	echo "--- Test 31: double-digit edge numbers sort numerically, not lexically ---" && \
+	git commit --allow-empty -q -m "commit after edge 9" && \
+	git tag server-v6.0.0-edge.10 && \
+	git commit --allow-empty -q -m "commit after edge 10" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "6.0.0-edge.11" ] || { echo "FAIL: expected 6.0.0-edge.11 (numeric sort past 9), got $$RESULT" >&2; exit 1; } && \
+	echo "  current-version = $$RESULT  OK" && \
 	\
 	echo "" && echo "All tests passed."

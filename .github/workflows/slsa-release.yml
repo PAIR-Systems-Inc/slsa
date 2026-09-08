@@ -97,10 +97,17 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      # Pin to this workflow file's own commit. Without an explicit ref this
+      # floats to the slsa default branch, while the build-artifacts job gets
+      # Makefile.slsa at the caller's pinned ref via the SLSA delegator — so a
+      # single release run could compute two different versions from two
+      # different revisions of the same Makefile (goodmem 1.0.316 shipped
+      # stable artifacts stamped "_edge_1" that way).
       - name: Checkout SLSA build tools
         uses: actions/checkout@v4
         with:
           repository: PAIR-Systems-Inc/slsa
+          ref: ${{ github.job_workflow_sha }}
           path: __slsa__
 
       - name: Install Makefile.slsa
@@ -349,10 +356,17 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      # Pin to this workflow file's own commit. Without an explicit ref this
+      # floats to the slsa default branch, while the build-artifacts job gets
+      # Makefile.slsa at the caller's pinned ref via the SLSA delegator — so a
+      # single release run could compute two different versions from two
+      # different revisions of the same Makefile (goodmem 1.0.316 shipped
+      # stable artifacts stamped "_edge_1" that way).
       - name: Checkout SLSA build tools
         uses: actions/checkout@v4
         with:
           repository: PAIR-Systems-Inc/slsa
+          ref: ${{ github.job_workflow_sha }}
           path: __slsa__
 
       - name: Install Makefile.slsa
