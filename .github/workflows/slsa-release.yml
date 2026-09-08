@@ -79,6 +79,7 @@ jobs:
     outputs:
       digest: ${{ steps.build-server.outputs.digest }}
       image: ${{ steps.image.outputs.name }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       # arc-release base image lacks git-lfs; install before any
       # actions/checkout step uses lfs: true.
@@ -158,6 +159,10 @@ jobs:
           echo "labels<<EOF" >> "$GITHUB_OUTPUT"
           echo "$LABELS" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+
+          # Exported so verify-release can cross-check the CLI binary's own
+          # version against this job's independently computed one.
+          echo "version=$(make -f "$MAKEFILE" release-tag)" >> "$GITHUB_OUTPUT"
 
       - name: fossa-scan
         uses: fossas/fossa-action@v1.8.0
@@ -270,6 +275,41 @@ jobs:
           tar -xzf dist/goodmem-linux-amd64.tar.gz -C /tmp
           sudo install -m0755 /tmp/goodmem-linux-amd64 /usr/local/bin/goodmem
           goodmem version || true
+
+      # Release gate. goodmem 1.0.316 shipped a stable release whose CLI binaries
+      # self-reported "v1.0.316_edge_1": docker-build and build-artifacts computed
+      # the version from two different revisions of Makefile.slsa. This job already
+      # ran `goodmem version` and printed that exact string — it just never checked
+      # it. Both assertions below would have failed that release.
+      - name: Assert CLI version matches the release
+        env:
+          # Computed independently by docker-build, so a mismatch here means the
+          # release jobs disagree — the 1.0.316 failure mode.
+          RELEASE_TAG: ${{ needs.docker-build.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_TAG" || { echo "::error::docker-build produced no version output" >&2; exit 1; }
+
+          EXPECTED="${RELEASE_TAG#server-}"
+          RAW="$(goodmem version)"
+          echo "goodmem version -> $RAW"
+          ACTUAL="$(printf '%s\n' "$RAW" | grep -oE 'v[0-9][^[:space:]]*' | head -n1 || true)"
+
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::CLI/release version mismatch: binary reports '${ACTUAL:-<none>}', release tag is '$RELEASE_TAG' (expected '$EXPECTED')" >&2
+            exit 1
+          fi
+
+          # Must be valid semver: the version is parsed with semver at runtime, so a
+          # malformed suffix makes `goodmem upgrade` abort with "invalid semantic
+          # version" for every user on the build. "_edge_1" is exactly this failure.
+          SEMVER='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
+          if ! printf '%s' "${ACTUAL#v}" | grep -qE "$SEMVER"; then
+            echo "::error::CLI version '$ACTUAL' is not valid semver; goodmem upgrade would fail at runtime for every user on this build" >&2
+            exit 1
+          fi
+
+          echo "OK: CLI reports $ACTUAL, matches release tag $RELEASE_TAG, valid semver"
 
       - name: system install (this release's image, verify ON)
         run: |
