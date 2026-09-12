@@ -98,6 +98,19 @@ current-version:
 release-tag:
 	@echo "$(GOODMEM_VERSION)"
 
+# The smallest release that must be able to supersede this one. Used by the
+# forward-upgrade gate, which asks the freshly built CLI whether it can still
+# upgrade once a newer version exists — the property goodmem 1.0.316 lost, where
+# the shipped CLI could not parse its own version and so could never upgrade off
+# itself. Bumping the patch of the numeric core and dropping any pre-release
+# makes this strictly greater than both 1.2.3 and 1.2.3-edge.N.
+.PHONY: next-release-tag
+next-release-tag:
+	@test -n "$(BASE_VERSION)" || { echo "Error: version.txt is missing or empty" >&2; exit 1; }
+	@core="$(BASE_VERSION)"; \
+	 major="$${core%%.*}"; rest="$${core#*.}"; minor="$${rest%%.*}"; patch="$${rest##*.}"; \
+	 echo "server-v$$major.$$minor.$$((patch + 1))"
+
 # Previous stable server tag to use as the release-note baseline for official
 # stable releases. Preview and non-server tags are intentionally excluded.
 .PHONY: previous-stable-release-tag
@@ -483,5 +496,28 @@ test:
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "6.0.0-edge.11" ] || { echo "FAIL: expected 6.0.0-edge.11 (numeric sort past 9), got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
+	\
+	echo "--- Test 32: next-release-tag supersedes a stable release ---" && \
+	echo "7.2.5" > version.txt && \
+	git add version.txt && git commit -q -m "bump to 7.2.5" && \
+	RESULT=$$(eval $$MK next-release-tag) && \
+	[ "$$RESULT" = "server-v7.2.6" ] || { echo "FAIL: expected server-v7.2.6, got $$RESULT" >&2; exit 1; } && \
+	echo "  next-release-tag = $$RESULT  OK" && \
+	\
+	echo "--- Test 33: next-release-tag supersedes an edge release too ---" && \
+	eval $$MK bump-tag && \
+	git commit --allow-empty -q -m "post-stable commit" && \
+	RESULT=$$(eval $$MK current-version) && \
+	[ "$$RESULT" = "7.2.5-edge.1" ] || { echo "FAIL: expected 7.2.5-edge.1, got $$RESULT" >&2; exit 1; } && \
+	RESULT=$$(eval $$MK next-release-tag) && \
+	[ "$$RESULT" = "server-v7.2.6" ] || { echo "FAIL: expected server-v7.2.6 for an edge release, got $$RESULT" >&2; exit 1; } && \
+	echo "  next-release-tag = $$RESULT (from 7.2.5-edge.1)  OK" && \
+	\
+	echo "--- Test 34: next-release-tag carries a two-digit patch ---" && \
+	echo "1.0.320" > version.txt && \
+	git add version.txt && git commit -q -m "bump to 1.0.320" && \
+	RESULT=$$(eval $$MK next-release-tag) && \
+	[ "$$RESULT" = "server-v1.0.321" ] || { echo "FAIL: expected server-v1.0.321, got $$RESULT" >&2; exit 1; } && \
+	echo "  next-release-tag = $$RESULT  OK" && \
 	\
 	echo "" && echo "All tests passed."
