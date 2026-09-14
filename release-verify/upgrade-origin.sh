@@ -1,47 +1,34 @@
 #!/usr/bin/env bash
 #
-# A local stand-in for get.goodmem.ai, used by the forward-upgrade release gate.
+# Local stand-in for get.goodmem.ai, used by the forward-upgrade release gate.
 #
-# `goodmem upgrade` discovers releases from a compile-time constant URL
-# (UPGRADE_URL = https://get.goodmem.ai/tag/) and there is deliberately no
-# override flag or environment variable — an update origin that a caller can
-# repoint is a supply-chain footgun. So to ask the freshly built CLI "can you
-# upgrade to a version newer than yourself?" before that version exists, we
-# answer as get.goodmem.ai for the duration of the job: a local CA trusted only
-# on this ephemeral runner, a hosts entry, and a tiny HTTPS server.
+# The CLI's update origin is a compile-time constant with no override flag, so the
+# gate answers as that host for the duration of the job: a local CA trusted only on
+# the ephemeral runner, a hosts entry, and an HTTPS server on :443.
 #
-# What is faked is exactly one thing: the version number in the /fetch response.
-# The tarball and provenance bundle served are this release's real, signed
-# artifacts, so `goodmem upgrade` performs genuine SLSA verification against the
-# production trust anchors. The CLI's own trust decisions are never weakened.
+# Only the version in the /fetch response is synthetic. The tarball and bundle
+# served are the release's real signed artifacts, so the upgrade still performs
+# genuine SLSA verification against the production trust anchors.
 #
-# Because the artifacts are the real ones, an upgrade that runs to completion
-# installs this release's binary — the post-upgrade binary reports its true
-# version, not the advertised one. The gate therefore asserts the upgrade
-# decision and the upgrade mechanism, not a post-upgrade version string.
-#
-# Usage:
-#   upgrade-origin.sh start <advertised-tag> <cli-tarball> <provenance-bundle>
-#   upgrade-origin.sh advertise <advertised-tag>
+#   upgrade-origin.sh start <tag> <cli-tarball> <provenance-bundle>
+#   upgrade-origin.sh advertise <tag>
 #   upgrade-origin.sh stop
 set -euo pipefail
 
 HOST=get.goodmem.ai
 STATE_DIR="${UPGRADE_ORIGIN_STATE:-/tmp/goodmem-upgrade-origin}"
-# Deliberately outside STATE_DIR, which `start` wipes: it is the only handle on
-# a server left behind by an earlier run, and :443 is not negotiable (the CLI
-# hardcodes https://get.goodmem.ai).
+# Outside STATE_DIR, which start wipes: the only handle on a server left by an
+# earlier run, and :443 is not negotiable.
 PID_FILE="${UPGRADE_ORIGIN_PIDFILE:-/tmp/goodmem-upgrade-origin.pid}"
 CA_INSTALLED=/usr/local/share/ca-certificates/goodmem-release-verify.crt
 HOSTS_MARK="# goodmem-release-verify"
 
-# Terminate a server left running by an earlier invocation, and wait for it to
-# actually release the port; kill() returns as soon as the signal is queued.
 kill_running_server() {
   [ -f "$PID_FILE" ] || return 0
   local pid; pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   [ -n "$pid" ] || { sudo rm -f "$PID_FILE"; return 0; }
   sudo kill "$pid" 2>/dev/null || true
+  # kill returns once the signal is queued; the port stays held until it exits.
   for _ in $(seq 1 40); do
     sudo kill -0 "$pid" 2>/dev/null || break
     sleep 0.25
@@ -59,8 +46,6 @@ cmd_start() {
   kill_running_server
   rm -rf "$STATE_DIR"; mkdir -p "$STATE_DIR/www/tag/latest"
 
-  # Local CA + leaf for get.goodmem.ai. Trusted only on this runner, removed by
-  # `stop`; the runner is ephemeral regardless.
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
     -keyout "$STATE_DIR/ca.key" -out "$STATE_DIR/ca.crt" \
     -subj "/CN=goodmem-release-verify-CA" >/dev/null 2>&1
@@ -75,12 +60,9 @@ cmd_start() {
 
   sudo cp "$STATE_DIR/ca.crt" "$CA_INSTALLED"
   sudo update-ca-certificates >/dev/null 2>&1
+  grep -q "$HOSTS_MARK" /etc/hosts \
+    || echo "127.0.0.1 $HOST $HOSTS_MARK" | sudo tee -a /etc/hosts >/dev/null
 
-  if ! grep -q "$HOSTS_MARK" /etc/hosts; then
-    echo "127.0.0.1 $HOST $HOSTS_MARK" | sudo tee -a /etc/hosts >/dev/null
-  fi
-
-  # Real signed artifacts, advertised under whatever version `advertise` says.
   cp "$tarball" "$STATE_DIR/www/tag/latest/goodmem-linux-amd64.tar.gz"
   cp "$bundle"  "$STATE_DIR/www/tag/latest/goodmem-linux-amd64.tar.gz.build.slsa"
   cmd_advertise "$tag"
@@ -91,18 +73,17 @@ state = os.environ["STATE_DIR"]
 os.chdir(os.path.join(state, "www"))
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain(os.path.join(state, "srv.pem"))
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *a): pass
-    # A client that closes mid-download is normal here; don't spam the log.
     def handle_one_request(self):
+        # A client closing mid-download is normal here.
         try:
             super().handle_one_request()
         except (ConnectionResetError, BrokenPipeError):
             self.close_connection = True
+
 class Server(http.server.HTTPServer):
-    # Explicit, and retried below: a previous run's sockets can sit in TIME_WAIT
-    # after its server exits, and an unlucky bind would otherwise fail the gate
-    # for a reason that has nothing to do with the release.
     allow_reuse_address = True
 
 httpd = None
@@ -139,28 +120,18 @@ cmd_advertise() {
 }
 
 cmd_stop() {
-  # Teardown is best effort and must run to the end: a half-removed hosts entry
-  # or a still-trusted test CA is worse than a noisy log line.
   set +e
-
-  # By recorded pid, never by pattern: a shared runner may have unrelated python
-  # processes.
   kill_running_server
-
   sudo rm -f "$CA_INSTALLED"
   sudo update-ca-certificates --fresh >/dev/null 2>&1
-
-  # NOT `sed -i`: /etc/hosts is a bind mount both in containers and in the
-  # Kubernetes pods the arc runners are, and sed -i renames a temp file over the
-  # target, which fails there with "Device or resource busy" — leaving the entry
-  # in place. Rewrite the existing inode instead.
+  # Not `sed -i`: /etc/hosts is a bind mount in containers and in Kubernetes pods,
+  # where the rename sed does fails with EBUSY and silently leaves the entry.
   if grep -q "$HOSTS_MARK" /etc/hosts 2>/dev/null; then
     local tmp; tmp="$(mktemp)"
     grep -v "$HOSTS_MARK" /etc/hosts > "$tmp"
     sudo cp "$tmp" /etc/hosts
     rm -f "$tmp"
   fi
-
   rm -rf "$STATE_DIR"
   set -e
   echo "upgrade origin torn down"

@@ -98,12 +98,9 @@ current-version:
 release-tag:
 	@echo "$(GOODMEM_VERSION)"
 
-# The smallest release that must be able to supersede this one. Used by the
-# forward-upgrade gate, which asks the freshly built CLI whether it can still
-# upgrade once a newer version exists — the property goodmem 1.0.316 lost, where
-# the shipped CLI could not parse its own version and so could never upgrade off
-# itself. Bumping the patch of the numeric core and dropping any pre-release
-# makes this strictly greater than both 1.2.3 and 1.2.3-edge.N.
+# The smallest release that must be able to supersede this one, advertised by the
+# forward-upgrade gate. Patch+1 with any pre-release dropped, so it is strictly
+# greater than both 1.2.3 and 1.2.3-edge.N.
 .PHONY: next-release-tag
 next-release-tag:
 	@test -n "$(BASE_VERSION)" || { echo "Error: version.txt is missing or empty" >&2; exit 1; }

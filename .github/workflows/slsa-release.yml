@@ -246,8 +246,7 @@ jobs:
           fetch-depth: 0
           lfs: true
 
-      # Pinned to the same revision as the rest of the run, so the gate's helper
-      # and the version it advertises come from one revision of the tooling.
+      # Pinned like the other jobs so the gate's tooling matches the run.
       - name: Checkout SLSA build tools
         uses: actions/checkout@v4
         with:
@@ -257,6 +256,9 @@ jobs:
 
       - name: Setup make
         uses: ./.github/actions/setup-make
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
 
       - name: Ensure docker compose
         uses: ./.github/actions/ensure-compose
@@ -385,107 +387,17 @@ jobs:
             --local-cli-tarball dist/goodmem-linux-amd64.tar.gz \
             --local-bundle "$BUNDLE"
 
-      # ── Forward-upgrade gate ──────────────────────────────────────────────
-      #
-      # Everything above proves an older install can reach this release. It says
-      # nothing about the opposite direction: whether someone who installs this
-      # release can ever leave it. That failure mode is worse, because an upgrade
-      # is driven by the *installed* CLI — a release that cannot upgrade itself
-      # strands every user who takes it, and no later release can rescue them.
-      #
-      # goodmem 1.0.316 was exactly that. Its CLI self-reported "v1.0.316_edge_1",
-      # which is not valid semver, so parseCurrentVersion() failed and both
-      # `goodmem upgrade` and `goodmem system upgrade` aborted with "failed to
-      # parse current version". This job ran at the time and passed, because both
-      # of its upgrade steps take the two paths that skip that parse:
-      # --local-cli-tarball returns before any version check
-      # (buildLocalTarballOutcome: "There is no remote version to compare
-      # against"), and --skip-cli-check disables the check outright. The steps
-      # below deliberately use neither escape hatch.
-      - name: Start local upgrade origin (advertising the next release)
-        env:
-          NEXT: ${{ needs.docker-build.outputs.next-version }}
-        run: |
-          set -euo pipefail
-          test -n "$NEXT" || { echo "::error::docker-build produced no next-version output" >&2; exit 1; }
-          BUNDLE="$(find provenance -name 'goodmem-linux-amd64.tar.gz.build.slsa' -print -quit)"
-          __slsa__/release-verify/upgrade-origin.sh start \
-            "$NEXT" dist/goodmem-linux-amd64.tar.gz "$BUNDLE"
-
-      - name: Gate - CLI recognises a newer release
+      # The reverse of the steps above: that this release can be upgraded away from.
+      # Those steps use --local-cli-tarball and --skip-cli-check, the two paths that
+      # skip the CLI's own version check, so neither can catch a release that cannot
+      # upgrade itself.
+      - name: Gate - this release can be upgraded away from
         env:
           RELEASE_TAG: ${{ needs.docker-build.outputs.version }}
-          NEXT: ${{ needs.docker-build.outputs.next-version }}
+          NEXT_TAG: ${{ needs.docker-build.outputs.next-version }}
         run: |
-          set -uo pipefail
-          # --check exercises the real discovery path: it parses this binary's own
-          # version, fetches the advertised one, and compares them. Exit 1 means
-          # "a newer release exists and I can move to it" — the property under test.
-          OUT="$(goodmem upgrade --check 2>&1)"; RC=$?
-          printf '%s\n' "$OUT"
-          if [ "$RC" -ne 1 ]; then
-            echo "::error::this release cannot upgrade to ${NEXT}: 'goodmem upgrade --check' exited ${RC}, expected 1 (update available). A release that cannot recognise a newer version can never be upgraded away from." >&2
-            exit 1
-          fi
-          # The CLI prints bare semver ("1.0.320"), while the tags carry a
-          # "server-v" prefix; strip both parts independently so neither a tag
-          # spelling change nor a missing prefix silently skips the assertion.
-          CUR="${RELEASE_TAG#server-}"; CUR="${CUR#v}"
-          NXT="${NEXT#server-}"; NXT="${NXT#v}"
-          printf '%s' "$OUT" | grep -qF "$CUR" || { echo "::error::--check output does not name the current version $CUR" >&2; exit 1; }
-          printf '%s' "$OUT" | grep -qF "$NXT" || { echo "::error::--check output does not name the newer version $NXT" >&2; exit 1; }
-          echo "OK: $CUR recognises $NXT as an upgrade"
-
-      - name: Gate - system upgrade tells the user how to move forward
-        run: |
-          set -uo pipefail
-          # With a newer CLI advertised, `system upgrade` must refuse *and say why*.
-          # On 1.0.316 this same command died with "failed to parse current version"
-          # — a dead end instead of an instruction. Note: no --skip-cli-check.
-          OUT="$(goodmem system upgrade --profile-name "$PROFILE" --image "$IMAGE" 2>&1)"; RC=$?
-          printf '%s\n' "$OUT"
-          if [ "$RC" -eq 0 ]; then
-            echo "::error::system upgrade ignored the CLI-outdated gate" >&2; exit 1
-          fi
-          printf '%s' "$OUT" | grep -qi "run 'goodmem upgrade' first" || {
-            echo "::error::system upgrade failed without actionable guidance; expected \"Run 'goodmem upgrade' first\", got the output above" >&2
-            exit 1
-          }
-          echo "OK: refused with actionable guidance"
-
-      - name: Gate - CLI upgrades forward for real
-        run: |
-          set -uo pipefail
-          # The full network path: download, SLSA-verify against the production
-          # trust anchors, extract, atomically replace. Only the advertised version
-          # number is synthetic — the artifacts are this release's signed ones, so
-          # the binary installed is this release's and still reports its true
-          # version. What this proves is that the upgrade *mechanism* works from
-          # here, not that a 1.0.x+1 binary exists.
-          OUT="$(goodmem upgrade --yes 2>&1)"; RC=$?
-          printf '%s\n' "$OUT"
-          if [ "$RC" -ne 0 ]; then
-            echo "::error::this release cannot install a newer one: 'goodmem upgrade --yes' exited ${RC}. Users who take this release would be stuck on it." >&2
-            exit 1
-          fi
-          printf '%s' "$OUT" | grep -q "SLSA provenance verified" || {
-            echo "::error::forward upgrade completed without verifying provenance — the upgrade path is not checking signatures" >&2
-            exit 1
-          }
-          goodmem version
-
-      - name: Gate - server upgrades with the CLI check live
-        env:
-          RELEASE_TAG: ${{ needs.docker-build.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Now the origin tells the truth, so the CLI-outdated gate passes and the
-          # server upgrade proceeds through it. This is the customer command with
-          # no --skip-cli-check: it runs the same version parse that 1.0.316 broke.
-          __slsa__/release-verify/upgrade-origin.sh advertise "$RELEASE_TAG"
-          goodmem system upgrade --profile-name "$PROFILE" --image "$IMAGE"
-          curl -fsS --retry 60 --retry-delay 2 --retry-connrefused "$READYZ"
-          goodmem system version --profile-name "$PROFILE" || true
+          just --justfile __slsa__/justfile --working-directory . \
+            forward-upgrade-gate "$RELEASE_TAG" "$NEXT_TAG" "$PROFILE" "$IMAGE" "$READYZ"
 
       - name: Stop local upgrade origin
         if: always()
