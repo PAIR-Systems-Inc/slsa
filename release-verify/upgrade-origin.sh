@@ -27,6 +27,11 @@ kill_running_server() {
   [ -f "$PID_FILE" ] || return 0
   local pid; pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   [ -n "$pid" ] || { sudo rm -f "$PID_FILE"; return 0; }
+  # Only signal our own server: the pid file sits in a world-writable directory.
+  case "$(cat "/proc/$pid/comm" 2>/dev/null)" in
+    python3|python) ;;
+    *) sudo rm -f "$PID_FILE"; return 0 ;;
+  esac
   sudo kill "$pid" 2>/dev/null || true
   # kill returns once the signal is queued; the port stays held until it exits.
   for _ in $(seq 1 40); do
@@ -46,9 +51,15 @@ cmd_start() {
   kill_running_server
   rm -rf "$STATE_DIR"; mkdir -p "$STATE_DIR/www/tag/latest"
 
+  # From here on the CA store and /etc/hosts get mutated, so any later failure
+  # must undo them rather than leave the runner trusting a private CA. EXIT, not
+  # ERR: the readiness probe gives up with an explicit `exit`, which ERR misses.
+  trap 'cmd_stop || true' EXIT
+
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
     -keyout "$STATE_DIR/ca.key" -out "$STATE_DIR/ca.crt" \
-    -subj "/CN=goodmem-release-verify-CA" >/dev/null 2>&1
+    -subj "/CN=goodmem-release-verify-CA" \
+    -addext "nameConstraints=critical,permitted;DNS:$HOST" >/dev/null 2>&1
   openssl req -newkey rsa:2048 -nodes \
     -keyout "$STATE_DIR/srv.key" -out "$STATE_DIR/srv.csr" \
     -subj "/CN=$HOST" >/dev/null 2>&1
@@ -56,7 +67,7 @@ cmd_start() {
     -CA "$STATE_DIR/ca.crt" -CAkey "$STATE_DIR/ca.key" -CAcreateserial \
     -out "$STATE_DIR/srv.crt" \
     -extfile <(printf "subjectAltName=DNS:%s" "$HOST") >/dev/null 2>&1
-  cat "$STATE_DIR/srv.crt" "$STATE_DIR/srv.key" > "$STATE_DIR/srv.pem"
+  (umask 077; cat "$STATE_DIR/srv.crt" "$STATE_DIR/srv.key" > "$STATE_DIR/srv.pem")
 
   sudo cp "$STATE_DIR/ca.crt" "$CA_INSTALLED"
   sudo update-ca-certificates >/dev/null 2>&1
@@ -67,7 +78,7 @@ cmd_start() {
   cp "$bundle"  "$STATE_DIR/www/tag/latest/goodmem-linux-amd64.tar.gz.build.slsa"
   cmd_advertise "$tag"
 
-  sudo -E env "STATE_DIR=$STATE_DIR" "PID_FILE=$PID_FILE" python3 - <<'PY' >"$STATE_DIR/server.log" 2>&1 &
+  sudo env "STATE_DIR=$STATE_DIR" "PID_FILE=$PID_FILE" python3 - <<'PY' >"$STATE_DIR/server.log" 2>&1 &
 import http.server, ssl, os, time
 state = os.environ["STATE_DIR"]
 os.chdir(os.path.join(state, "www"))
@@ -102,9 +113,14 @@ with open(os.environ["PID_FILE"], "w") as fh:
 httpd.serve_forever()
 PY
 
+  local server_pid=$!
   for _ in $(seq 1 60); do
-    if curl -fsS "https://$HOST/tag/latest/fetch" >/dev/null 2>&1; then
-      echo "upgrade origin up, advertising $(curl -fsS "https://$HOST/tag/latest/fetch")"
+    if ! kill -0 "$server_pid" 2>/dev/null && [ ! -f "$PID_FILE" ]; then
+      break
+    fi
+    if curl -fsS --connect-timeout 2 --max-time 5 "https://$HOST/tag/latest/fetch" >/dev/null 2>&1; then
+      trap - EXIT
+      echo "upgrade origin up, advertising $(curl -fsS --max-time 10 "https://$HOST/tag/latest/fetch")"
       return 0
     fi
     sleep 0.5
@@ -123,7 +139,7 @@ cmd_stop() {
   set +e
   kill_running_server
   sudo rm -f "$CA_INSTALLED"
-  sudo update-ca-certificates --fresh >/dev/null 2>&1
+  sudo update-ca-certificates >/dev/null 2>&1
   # Not `sed -i`: /etc/hosts is a bind mount in containers and in Kubernetes pods,
   # where the rename sed does fails with EBUSY and silently leaves the entry.
   if grep -q "$HOSTS_MARK" /etc/hosts 2>/dev/null; then
@@ -133,7 +149,15 @@ cmd_stop() {
     rm -f "$tmp"
   fi
   rm -rf "$STATE_DIR"
+
+  local leaked=""
+  [ -f "$CA_INSTALLED" ] && leaked="$leaked trusted-CA"
+  grep -q "$HOSTS_MARK" /etc/hosts 2>/dev/null && leaked="$leaked hosts-entry"
   set -e
+  if [ -n "$leaked" ]; then
+    echo "::error::upgrade origin teardown incomplete, still present:$leaked" >&2
+    return 1
+  fi
   echo "upgrade origin torn down"
 }
 

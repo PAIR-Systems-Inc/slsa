@@ -149,6 +149,7 @@ jobs:
       - name: Compute build metadata
         id: meta
         run: |
+          set -euo pipefail
           MAKEFILE="Makefile.slsa"
 
           BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
@@ -225,6 +226,7 @@ jobs:
       contents: read
       packages: read
     runs-on: arc-release
+    timeout-minutes: 45
     env:
       IMAGE: ${{ needs.docker-build.outputs.image }}@${{ needs.docker-build.outputs.digest }}
       PRIOR_IMAGE: ghcr.io/pair-systems-inc/goodmem/server:latest
@@ -396,12 +398,15 @@ jobs:
           RELEASE_TAG: ${{ needs.docker-build.outputs.version }}
           NEXT_TAG: ${{ needs.docker-build.outputs.next-version }}
         run: |
+          set -euo pipefail
+          test -n "$RELEASE_TAG" && test -n "$NEXT_TAG" \
+            || { echo "::error::docker-build produced no version outputs" >&2; exit 1; }
           just --justfile __slsa__/justfile --working-directory . \
             forward-upgrade-gate "$RELEASE_TAG" "$NEXT_TAG" "$PROFILE" "$IMAGE" "$READYZ"
 
       - name: Stop local upgrade origin
         if: always()
-        run: __slsa__/release-verify/upgrade-origin.sh stop || true
+        run: __slsa__/release-verify/upgrade-origin.sh stop
 
   publish:
     needs: [slsa-run, docker-build, container-provenance-server, verify-release]
