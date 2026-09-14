@@ -80,6 +80,7 @@ jobs:
       digest: ${{ steps.build-server.outputs.digest }}
       image: ${{ steps.image.outputs.name }}
       version: ${{ steps.meta.outputs.version }}
+      next-version: ${{ steps.meta.outputs.next-version }}
     steps:
       # arc-release base image lacks git-lfs; install before any
       # actions/checkout step uses lfs: true.
@@ -148,6 +149,7 @@ jobs:
       - name: Compute build metadata
         id: meta
         run: |
+          set -euo pipefail
           MAKEFILE="Makefile.slsa"
 
           BUILD_ARGS=$(make -f "$MAKEFILE" docker-build-args)
@@ -163,6 +165,10 @@ jobs:
           # Exported so verify-release can cross-check the CLI binary's own
           # version against this job's independently computed one.
           echo "version=$(make -f "$MAKEFILE" release-tag)" >> "$GITHUB_OUTPUT"
+
+          # The version the forward-upgrade gate advertises as "already out", to
+          # check this release can still upgrade once something newer exists.
+          echo "next-version=$(make -f "$MAKEFILE" next-release-tag)" >> "$GITHUB_OUTPUT"
 
       - name: fossa-scan
         uses: fossas/fossa-action@v1.8.0
@@ -220,6 +226,7 @@ jobs:
       contents: read
       packages: read
     runs-on: arc-release
+    timeout-minutes: 45
     env:
       IMAGE: ${{ needs.docker-build.outputs.image }}@${{ needs.docker-build.outputs.digest }}
       PRIOR_IMAGE: ghcr.io/pair-systems-inc/goodmem/server:latest
@@ -241,8 +248,19 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      # Pinned like the other jobs so the gate's tooling matches the run.
+      - name: Checkout SLSA build tools
+        uses: actions/checkout@v4
+        with:
+          repository: PAIR-Systems-Inc/slsa
+          ref: ${{ github.job_workflow_sha }}
+          path: __slsa__
+
       - name: Setup make
         uses: ./.github/actions/setup-make
+
+      - name: Setup just
+        uses: ./.github/actions/setup-just
 
       - name: Ensure docker compose
         uses: ./.github/actions/ensure-compose
@@ -370,6 +388,25 @@ jobs:
           /tmp/gm-verify upgrade --yes \
             --local-cli-tarball dist/goodmem-linux-amd64.tar.gz \
             --local-bundle "$BUNDLE"
+
+      # The reverse of the steps above: that this release can be upgraded away from.
+      # Those steps use --local-cli-tarball and --skip-cli-check, the two paths that
+      # skip the CLI's own version check, so neither can catch a release that cannot
+      # upgrade itself.
+      - name: Gate - this release can be upgraded away from
+        env:
+          RELEASE_TAG: ${{ needs.docker-build.outputs.version }}
+          NEXT_TAG: ${{ needs.docker-build.outputs.next-version }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_TAG" && test -n "$NEXT_TAG" \
+            || { echo "::error::docker-build produced no version outputs" >&2; exit 1; }
+          just --justfile __slsa__/justfile --working-directory . \
+            forward-upgrade-gate "$RELEASE_TAG" "$NEXT_TAG" "$PROFILE" "$IMAGE" "$READYZ"
+
+      - name: Stop local upgrade origin
+        if: always()
+        run: __slsa__/release-verify/upgrade-origin.sh stop
 
   publish:
     needs: [slsa-run, docker-build, container-provenance-server, verify-release]
