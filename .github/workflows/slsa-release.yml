@@ -164,14 +164,13 @@ jobs:
           # version against this job's independently computed one.
           echo "version=$(make -f "$MAKEFILE" release-tag)" >> "$GITHUB_OUTPUT"
 
-      - name: fossa-scan
-        uses: fossas/fossa-action@v1.8.0
-        with:
-          api-key: ${{ secrets.FOSSA_API_KEY }}
-          generate-report: html
-
-      - name: Save fossa report
-        run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
+      # Reads back the FOSSA analysis the caller uploaded for this commit and
+      # checks it lists every ecosystem; see "Third-party notices" in
+      # Makefile.slsa. Writes the file docker-build-args passes to the build.
+      - name: Generate third-party notices
+        env:
+          FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
+        run: make -f Makefile.slsa third-party-notices
 
       - name: Select image name
         id: image

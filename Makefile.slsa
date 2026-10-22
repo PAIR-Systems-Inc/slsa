@@ -181,6 +181,55 @@ docker-labels:
 	@echo "org.opencontainers.image.title=GoodMem Server"
 
 # ---------------------------------------------------------------------------
+# Third-party notices
+#
+# The image's $(THIRD_PARTY_NOTICES) is the FOSSA attribution report of the
+# analysis the caller uploaded for this commit before the release workflow.
+# These targets only read it back: FOSSA keeps one analysis per revision, so
+# every release job uses the same one.
+# ---------------------------------------------------------------------------
+
+# FOSSA CLI release that reads the report; the download is checked against
+# this digest. Kept out of the workspace, which is the docker build context.
+FOSSA_CLI_VERSION := 3.20.5
+FOSSA_CLI_SHA256 := aef60ed1eb51fbb2c0ae86625884b44acf279d93201aa7b09d650b5c12801c7b
+FOSSA_CLI_DIR ?= $(or $(RUNNER_TEMP),/tmp)/fossa-cli-$(FOSSA_CLI_VERSION)
+
+# Package-locator prefixes the notices must contain: one per ecosystem the
+# caller's .fossa.yml targets (gradle: mvn+, gomod: go+).
+NOTICES_REQUIRED_LOCATORS ?= mvn+ go+
+
+# Write $(THIRD_PARTY_NOTICES) from the caller's FOSSA analysis of this commit
+# Env: FOSSA_API_KEY
+.PHONY: third-party-notices
+third-party-notices: $(FOSSA_CLI_DIR)/fossa
+	@test -n "$${FOSSA_API_KEY:-}" || { echo "FOSSA_API_KEY is not set" >&2; exit 1; }
+	@echo "Fetching third-party notices for $(BUILD_COMMIT_SHA)..."
+	@"$(FOSSA_CLI_DIR)/fossa" report attribution --format html --revision "$(BUILD_COMMIT_SHA)" > "$(THIRD_PARTY_NOTICES)"
+	@$(SELF) --no-print-directory check-third-party-notices
+
+# Fail unless $(THIRD_PARTY_NOTICES) lists packages of every required ecosystem
+.PHONY: check-third-party-notices
+check-third-party-notices:
+	@for locator in $(NOTICES_REQUIRED_LOCATORS); do \
+		grep -qF -- "$$locator" "$(THIRD_PARTY_NOTICES)" || { \
+			echo "$(THIRD_PARTY_NOTICES) lists no '$$locator' packages: the FOSSA analysis of $(BUILD_COMMIT_SHA) is incomplete" >&2; \
+			exit 1; \
+		}; \
+	done
+	@echo "$(THIRD_PARTY_NOTICES) lists packages of: $(NOTICES_REQUIRED_LOCATORS)"
+
+# Release runners are linux/amd64
+$(FOSSA_CLI_DIR)/fossa:
+	@[ "$$(uname -sm)" = "Linux x86_64" ] || { echo "the pinned FOSSA CLI is linux/amd64; this is $$(uname -sm)" >&2; exit 1; }
+	@mkdir -p "$(FOSSA_CLI_DIR)"
+	@curl -fsSL --retry 3 -o "$(FOSSA_CLI_DIR)/fossa.tar.gz" \
+		"https://github.com/fossas/fossa-cli/releases/download/v$(FOSSA_CLI_VERSION)/fossa_$(FOSSA_CLI_VERSION)_linux_amd64.tar.gz"
+	@echo "$(FOSSA_CLI_SHA256)  $(FOSSA_CLI_DIR)/fossa.tar.gz" | sha256sum -c -
+	@tar -xzf "$(FOSSA_CLI_DIR)/fossa.tar.gz" -C "$(FOSSA_CLI_DIR)" fossa
+	@rm "$(FOSSA_CLI_DIR)/fossa.tar.gz"
+
+# ---------------------------------------------------------------------------
 # Release pipeline
 #
 # github-release orchestrates the steps below in order.
@@ -483,5 +532,21 @@ test:
 	RESULT=$$(eval $$MK current-version) && \
 	[ "$$RESULT" = "6.0.0-edge.11" ] || { echo "FAIL: expected 6.0.0-edge.11 (numeric sort past 9), got $$RESULT" >&2; exit 1; } && \
 	echo "  current-version = $$RESULT  OK" && \
+	\
+	echo "--- Test 32: check-third-party-notices passes when every ecosystem is listed ---" && \
+	printf '%s\n' '<a href="#mvn+com.google.errorprone:error_prone_annotation$$2.49.0" class="summary-table__link">' \
+		'<a href="#go+code.gitea.io/sdk/gitea$$v0.22.1" class="summary-table__link">' > notices.html && \
+	eval $$MK check-third-party-notices THIRD_PARTY_NOTICES=notices.html >/dev/null || { echo "FAIL: expected notices listing mvn+ and go+ to pass" >&2; exit 1; } && \
+	echo "  mvn+ and go+ listed  OK" && \
+	\
+	echo "--- Test 33: check-third-party-notices fails when an ecosystem is missing ---" && \
+	printf '%s\n' '<a href="#go+code.gitea.io/sdk/gitea$$v0.22.1" class="summary-table__link">' > notices.html && \
+	if eval $$MK check-third-party-notices THIRD_PARTY_NOTICES=notices.html >/dev/null 2>&1; then echo "FAIL: expected notices without mvn+ to fail" >&2; exit 1; fi && \
+	echo "  go+ only rejected  OK" && \
+	\
+	echo "--- Test 34: check-third-party-notices fails on an empty file ---" && \
+	printf '\n' > notices.html && \
+	if eval $$MK check-third-party-notices THIRD_PARTY_NOTICES=notices.html >/dev/null 2>&1; then echo "FAIL: expected empty notices to fail" >&2; exit 1; fi && \
+	echo "  empty file rejected  OK" && \
 	\
 	echo "" && echo "All tests passed."
