@@ -164,14 +164,31 @@ jobs:
           # version against this job's independently computed one.
           echo "version=$(make -f "$MAKEFILE" release-tag)" >> "$GITHUB_OUTPUT"
 
+      # The caller's ref can be a branch, tag, or SHA. Only attribute this
+      # scan to main when the actual checkout is the caller's main commit.
+      # Otherwise use the requested ref as an explicit label instead of
+      # letting detached-checkout detection choose a default branch.
+      - name: Identify FOSSA checkout
+        id: fossa-checkout
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: fossa-scan
         uses: fossas/fossa-action@v1.8.0
         with:
           api-key: ${{ secrets.FOSSA_API_KEY }}
-          generate-report: html
+          branch: ${{ github.ref == 'refs/heads/main' && github.sha == steps.fossa-checkout.outputs.sha && inputs.ref == steps.fossa-checkout.outputs.sha && 'main' || inputs.ref }}
 
-      - name: Save fossa report
-        run: echo '${{ steps.fossa-scan.outputs.report }}' > THIRD_PARTY_LICENSES.html
+      # The action's branch input applies to analyze, not report. Fetch the
+      # attribution artifact by the same checkout SHA instead of relying on
+      # report's latest-revision selection or an unset action step id.
+      - name: Save FOSSA report for checkout
+        env:
+          FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
+          FOSSA_REVISION: ${{ steps.fossa-checkout.outputs.sha }}
+        run: |
+          fossa report attribution --revision "$FOSSA_REVISION" --format html > THIRD_PARTY_LICENSES.html
+          test -s THIRD_PARTY_LICENSES.html
 
       - name: Select image name
         id: image
